@@ -4,6 +4,7 @@ import (
 	"borrower/borrower"
 	"context"
 	"log"
+	"math/rand"
 	"os"
 	"os/signal"
 	"sync"
@@ -49,15 +50,39 @@ func start() (context.CancelFunc, <-chan struct{}) {
 }
 
 func loop(stop <-chan struct{}) {
-	waitTime, _ := time.ParseDuration("1m")
+	processTimer := time.NewTimer(0)
+	requestTimer := time.NewTimer(0)
 	for {
-		borrower.Process()
-
 		select {
+
 		case <-stop:
+			processTimer.Stop()
+			requestTimer.Stop()
 			return
-		case <-time.After(waitTime):
+
+		case <-processTimer.C:
+			processWait := borrower.Process()
+			if processWait <= 0 {
+				processWait = 1 * time.Minute
+			}
+			// Add a 60 second jitter
+			processWait = processWait.Round(time.Second) + time.Duration(rand.Intn(60))*time.Second
+			until := time.Now().Add(processWait).Format(borrower.TimeFormat)
+			log.Printf("💤 Next process of participations in %v at %v", processWait, until)
+			processTimer.Reset(processWait)
 			continue
+
+		case <-requestTimer.C:
+			requestWait := borrower.Request()
+			if requestWait <= 0 {
+				requestWait = 1 * time.Minute
+			}
+			requestWait = requestWait.Round(time.Second)
+			until := time.Now().Add(requestWait).Format(borrower.TimeFormat)
+			log.Printf("💤 Next request in %v at %v", requestWait, until)
+			requestTimer.Reset(requestWait)
+			continue
+
 		}
 	}
 }

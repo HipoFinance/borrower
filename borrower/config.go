@@ -59,8 +59,18 @@ func ReadConfig() (config *Config, err error) {
 	return
 }
 
+var ConfigElection int32 = 15
 var ConfigStake int32 = 17
 var ConfigCurrentValidators int32 = 34
+
+func GetElectionConfig(c *cell.Cell) (uint32, uint32, uint32, uint32) {
+	// _ validators_elected_for:uint32 elections_start_before:uint32
+	//   elections_end_before:uint32 stake_held_for:uint32
+	//   = ConfigParam 15;
+	s := c.BeginParse()
+	return uint32(s.MustLoadUInt(32)), uint32(s.MustLoadUInt(32)),
+		uint32(s.MustLoadUInt(32)), uint32(s.MustLoadUInt(32))
+}
 
 func GetMinStake(c *cell.Cell) *big.Int {
 	// _ min_stake:Grams max_stake:Grams min_total_stake:Grams max_stake_factor:uint32 = ConfigParam 17;

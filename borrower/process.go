@@ -19,90 +19,33 @@ import (
 	"github.com/xssnick/tonutils-go/tvm/cell"
 )
 
-func Process() {
-	config, err := ReadConfig()
-	if err != nil {
-		log.Printf("❌ Error in reading borrower.yaml: %v", err)
-		return
-	}
+func Process() (wait time.Duration) {
+	defer func() {
+		if err := recover(); err != nil {
+			wait = 0
+			log.Printf("❌ %s", err)
+		}
+	}()
 
-	liteserverKeyContent, err := os.ReadFile(config.ValidatorEngine.LiteserverKey)
-	if err != nil {
-		log.Printf("❌ Error in reading liteserver_key: %v", err)
-		return
-	}
-	liteserverKey := base64.StdEncoding.EncodeToString(liteserverKeyContent[len(liteserverKeyContent)-32:])
+	config := loadConfig()
 
-	client := liteclient.NewConnectionPool()
-	ctx := client.StickyContext(context.Background())
-	liteserverAddress := fmt.Sprintf("%v:%v", config.ValidatorEngine.Ip, config.ValidatorEngine.LiteserverPort)
-	err = client.AddConnection(ctx, liteserverAddress, liteserverKey)
-	if err != nil {
-		log.Printf("❌ Error in connecting to liteserver: %v", err)
-		return
-	}
+	api := loadApi(config)
 
 	tonlib := NewTonlib(config.TonlibCli.Executable, config.TonlibCli.GlobalConfig)
-	console := NewValidatorEngine(config.ValidatorEngine)
-	timedCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 
-	isSync := console.IsSync(timedCtx)
-
-	if !isSync {
-		log.Printf("❌ Error, liteserver is out of sync")
-		return
-	}
-
-	api := ton.NewAPIClient(client)
-	masterchainInfo, err := api.CurrentMasterchainInfo(ctx)
-	if err != nil {
-		log.Printf("❌ Error in getting current masterchain info: %v", err)
-		return
-	}
-
-	blockchainConfig, err := api.GetBlockchainConfig(ctx, masterchainInfo, ConfigCurrentValidators, ConfigStake)
-	if err != nil {
-		log.Printf("❌ Error in getting blockchain config: %v", err)
-		return
-	}
-
-	minStake := GetMinStake(blockchainConfig.Get(ConfigStake))
-	currentValidators := blockchainConfig.Get(ConfigCurrentValidators)
-	currentVsetHash := new(big.Int).SetBytes(currentValidators.Hash())
-	_, nextRoundSince := GetVsetTimes(currentValidators)
+	engine := NewValidatorEngine(config.ValidatorEngine)
 
 	treasuryAddress := address.MustParseAddr(config.Treasury)
-	treasuryAccount, err := api.GetAccount(ctx, masterchainInfo, treasuryAddress)
-	if err != nil {
-		log.Printf("❌ Error in getting treasury account: %v", err)
-		return
-	}
-	if !treasuryAccount.IsActive {
-		log.Printf("❌ Error, treasury account is not active")
-		return
-	}
 
-	treasuryState, err := api.RunGetMethod(ctx, masterchainInfo, treasuryAddress, "get_treasury_state")
-	if err != nil {
-		log.Printf("❌ Error in getting treasury state: %v", err)
-		return
-	}
+	checkLiteserverIsSync(engine)
 
-	participateSince, err := tonlib.GetParticipateSince(timedCtx, *treasuryAddress)
-	if err != nil {
-		log.Printf("❌ Error in getting times: %v", err)
-		return
-	}
+	mainchainInfo := loadMainchainInfo(api)
 
-	var participations *cell.Dictionary
-	if !treasuryState.MustIsNil(5) {
-		participations, err = treasuryState.MustCell(5).BeginParse().ToDict(32)
-	}
-	if err != nil {
-		log.Printf("❌ Error in loading participations dictionary: %v", err)
-		return
-	}
+	validatorsElectedFor, _, currentVsetHash, nextRoundSince := loadBlockchainConfig(api, mainchainInfo)
+
+	participations, _ := loadTreasuryState(api, mainchainInfo, treasuryAddress)
+
+	participateSince := tonlib.GetParticipateSince(*treasuryAddress)
 
 	participationsList := []*cell.HashmapKV{}
 	if participations != nil {
@@ -110,124 +53,414 @@ func Process() {
 	}
 
 	for _, kv := range participationsList {
-		roundSince := kv.Key.BeginParse().MustLoadUInt(32)
+		roundSince := uint32(kv.Key.BeginParse().MustLoadUInt(32))
 		participation := LoadParticipation(kv.Value)
+		formattedRoundSince := time.Unix(int64(roundSince), 0).Format(TimeFormat)
+		log.Printf("ℹ️  Round: %v, state: %v", formattedRoundSince, participation.State)
+		roundParticipateTime := participateSince
+		if roundSince < participateSince {
+			roundParticipateTime = roundSince
+		}
+		now := uint32(time.Now().Unix())
+		vsetChanged := participation.CurrentVsetHash.Cmp(currentVsetHash) != 0
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
 		if participation.State == ParticipationOpen {
-			if participateSince < int(time.Now().Unix()) {
+			if now < roundParticipateTime {
+				next := time.Until(time.Unix(int64(roundParticipateTime), 0))
+				if wait == 0 || wait > next {
+					wait = next
+				}
+			} else {
 				err := api.SendExternalMessage(ctx, &tlb.ExternalMessage{
 					DstAddr: treasuryAddress,
 					Body: cell.BeginCell().
-						MustStoreUInt(0x574a297b, 32).
-						MustStoreUInt(uint64(time.Now().Unix()), 64).
-						MustStoreUInt(roundSince, 32).
+						MustStoreUInt(ParticipateInElection, 32).
+						MustStoreUInt(uint64(now), 64).
+						MustStoreUInt(uint64(roundSince), 32).
 						EndCell(),
 				})
 				if err != nil {
-					log.Printf("❌ Error in sending participate_in_election: %v", err)
+					log.Printf("⚠️  Failed to send participate_in_election for round %v", formattedRoundSince)
 				} else {
-					log.Printf("☑️ Sent participate_in_election")
+					log.Printf("☑️  Sent participate_in_election for round %v", formattedRoundSince)
+				}
+				next := 30 * time.Second
+				if wait == 0 || wait > next {
+					wait = next
 				}
 			}
-		} else if (participation.State == ParticipationStaked || participation.State == ParticipationValidating) &&
-			participation.CurrentVsetHash != currentVsetHash {
-			err := api.SendExternalMessage(ctx, &tlb.ExternalMessage{
-				DstAddr: treasuryAddress,
-				Body: cell.BeginCell().
-					MustStoreUInt(0x2f0b5b3b, 32).
-					MustStoreUInt(uint64(time.Now().Unix()), 64).
-					MustStoreUInt(roundSince, 32).
-					EndCell(),
-			})
-			if err != nil {
-				log.Printf("❌ Error in sending vset_changed: %v", err)
-			} else {
-				log.Printf("☑️ Sent vset_changed")
+
+		} else if participation.State == ParticipationDistribution {
+			next := 30 * time.Second
+			if wait == 0 || wait > next {
+				wait = next
 			}
-		} else if participation.State == ParticipationHeld && uint32(time.Now().Unix()) > participation.StakeHeldUntil {
-			err := api.SendExternalMessage(ctx, &tlb.ExternalMessage{
-				DstAddr: treasuryAddress,
-				Body: cell.BeginCell().
-					MustStoreUInt(0x23274435, 32).
-					MustStoreUInt(uint64(time.Now().Unix()), 64).
-					MustStoreUInt(roundSince, 32).
-					EndCell(),
-			})
-			if err != nil {
-				log.Printf("❌ Error in sending finish_participation: %v", err)
+
+		} else if participation.State == ParticipationStaked {
+			if !vsetChanged {
+				next := time.Until(time.Unix(int64(nextRoundSince), 0))
+				if wait == 0 || wait > next {
+					wait = next
+				}
 			} else {
-				log.Printf("☑️ Sent finish_participation")
+				err := api.SendExternalMessage(ctx, &tlb.ExternalMessage{
+					DstAddr: treasuryAddress,
+					Body: cell.BeginCell().
+						MustStoreUInt(VsetChanged, 32).
+						MustStoreUInt(uint64(now), 64).
+						MustStoreUInt(uint64(roundSince), 32).
+						EndCell(),
+				})
+				if err != nil {
+					log.Printf("⚠️  Failed to send validating vset_changed for round %v", formattedRoundSince)
+				} else {
+					log.Printf("☑️  Sent validating vset_changed for round %v", formattedRoundSince)
+				}
+				next := 30 * time.Second
+				if wait == 0 || wait > next {
+					wait = next
+				}
+			}
+
+		} else if participation.State == ParticipationValidating {
+			if !vsetChanged {
+				next := time.Until(time.Unix(int64(roundSince+validatorsElectedFor), 0))
+				if wait == 0 || wait > next {
+					wait = next
+				}
+			} else {
+				err := api.SendExternalMessage(ctx, &tlb.ExternalMessage{
+					DstAddr: treasuryAddress,
+					Body: cell.BeginCell().
+						MustStoreUInt(VsetChanged, 32).
+						MustStoreUInt(uint64(now), 64).
+						MustStoreUInt(uint64(roundSince), 32).
+						EndCell(),
+				})
+				if err != nil {
+					log.Printf("⚠️  Failed to send held vset_changed for round %v", formattedRoundSince)
+				} else {
+					log.Printf("☑️  Sent held vset_changed for round %v", formattedRoundSince)
+				}
+				next := 30 * time.Second
+				if wait == 0 || wait > next {
+					wait = next
+				}
+			}
+
+		} else if participation.State == ParticipationHeld {
+			if now < participation.StakeHeldUntil {
+				next := time.Until(time.Unix(int64(participation.StakeHeldUntil), 0))
+				if wait == 0 || wait > next {
+					wait = next
+				}
+
+			} else {
+				err := api.SendExternalMessage(ctx, &tlb.ExternalMessage{
+					DstAddr: treasuryAddress,
+					Body: cell.BeginCell().
+						MustStoreUInt(FinishParticipation, 32).
+						MustStoreUInt(uint64(now), 64).
+						MustStoreUInt(uint64(roundSince), 32).
+						EndCell(),
+				})
+				if err != nil {
+					log.Printf("⚠️  Failed to send finish_participation for round %v", formattedRoundSince)
+				} else {
+					log.Printf("☑️  Sent finish_participation for round %v", formattedRoundSince)
+				}
+				next := 30 * time.Second
+				if wait == 0 || wait > next {
+					wait = next
+				}
 			}
 		}
 	}
 
+	return
+}
+
+func Request() (wait time.Duration) {
+	defer func() {
+		if err := recover(); err != nil {
+			wait = 0
+			log.Printf("❌ %s", err)
+		}
+	}()
+
+	config := loadConfig()
+
+	api := loadApi(config)
+
+	tonlib := NewTonlib(config.TonlibCli.Executable, config.TonlibCli.GlobalConfig)
+
+	engine := NewValidatorEngine(config.ValidatorEngine)
+
+	treasuryAddress := address.MustParseAddr(config.Treasury)
+
+	checkLiteserverIsSync(engine)
+
+	mainchainInfo := loadMainchainInfo(api)
+
+	_, minStake, _, nextRoundSince := loadBlockchainConfig(api, mainchainInfo)
+
+	participations, stopped := loadTreasuryState(api, mainchainInfo, treasuryAddress)
+
+	formattedNextRoundSince := time.Unix(int64(nextRoundSince), 0).Format(TimeFormat)
+
+	wait = time.Until(time.Unix(int64(nextRoundSince+30), 0))
+
 	if !config.Borrow.Active {
-		log.Printf("↩️  Borrowing is inactive")
-		return
+		log.Printf("↩️  Borrow config is inactive")
+		return 0
 	}
 
-	if config.Borrow.MaxFactorRatio < 1 {
-		log.Printf("❌ Error, max_factor_ratio must be >= 1.0")
-		return
-	}
-	maxFactor := uint64(config.Borrow.MaxFactorRatio * 65536)
+	adnlAddressBigInt := loadAdnlAddress(config.ValidatorEngine.AdnlAddress)
 
-	stopped := treasuryState.MustInt(6)
-	if stopped.Cmp(big.NewInt(0)) != 0 {
-		log.Printf("🔲 Treasury is stopped")
-		return
-	}
-
-	var version wallet.Version
-	if config.Wallet.Version == "v4r2" {
-		version = wallet.V4R2
-	} else if config.Wallet.Version == "v3r2" {
-		version = wallet.V3R2
-	} else {
-		log.Printf("❌ Error, invalid wallet version, expected v4r2 or v3r2 but got: %v", config.Wallet.Version)
-		return
-	}
-
-	secret, err := os.ReadFile(config.Wallet.Path)
-	if err != nil {
-		log.Printf("❌ Error in reading wallet secret: %v", err)
-		return
-	}
-
-	var w *wallet.Wallet
-	if config.Wallet.Type == "mnemonic" {
-		seed := strings.Split(strings.Trim(string(secret), " \n\t"), " ")
-		w, err = wallet.FromSeed(api, seed, version)
-	} else if config.Wallet.Type == "binary" {
-		w, err = wallet.FromPrivateKey(api, secret, version)
-	} else {
-		log.Printf("❌ Error, invalid wallet type, expected mnemonic or binary but got: %v", config.Wallet.Type)
-		return
-	}
-	if err != nil {
-		log.Printf("❌ Error in loading wallet: %v", err)
-		return
-	}
+	w := loadWallet(config.Wallet, api)
 
 	validatorAddress := w.Address()
 	validatorAddress.SetTestnetOnly(treasuryAddress.IsTestnetOnly())
-	validatorAddressSlice := cell.BeginCell().MustStoreAddr(validatorAddress).EndCell().BeginParse()
+	validatorKey := cell.BeginCell().MustStoreBigUInt(new(big.Int).SetBytes(validatorAddress.Data()), 256).EndCell()
 
-	addrRes, err := api.RunGetMethod(ctx, masterchainInfo, treasuryAddress, "get_loan_address", validatorAddressSlice, nextRoundSince)
-	if err != nil {
-		log.Printf("❌ Error in getting loan address: %v", err)
+	loanAddress := loadLoanAddress(validatorAddress, treasuryAddress, nextRoundSince, api, mainchainInfo)
+
+	stake, loan, minPayment, maxFactor, validatorRewardShare := loadBorrowConfig(config.Borrow, minStake)
+
+	maxPunishment := tonlib.GetMaxPunishment(*treasuryAddress, loan)
+
+	requestLoanFee := tonlib.GetRequestLoanFee(*treasuryAddress)
+
+	if stopped {
+		log.Printf("🔲 Treasury is stopped")
+		return 0
+	}
+
+	participation := loadParticipation(participations, nextRoundSince)
+	if participation.Requests != nil && participation.Requests.Get(validatorKey) != nil {
+		log.Printf("⏩ Already participated in round %v", formattedNextRoundSince)
 		return
 	}
-	loanAddress := addrRes.MustSlice(0).MustLoadAddr()
-	log.Printf("Loan Address: %v", loanAddress)
-
-	adnlAddressBytes, err := hex.DecodeString(config.ValidatorEngine.AdnlAddress)
-	if err != nil {
-		log.Printf("❌ Error in decoding adnl address: %v", err)
+	if participation.State != ParticipationOpen {
+		log.Printf("⏩ Loan requests are not accepted at the moment for round %v", formattedNextRoundSince)
 		return
 	}
+
+	value := big.NewInt(1000000000)
+	value = value.Add(value, requestLoanFee)
+	value = value.Add(value, maxPunishment)
+	value = value.Add(value, minPayment)
+	value = value.Add(value, stake)
+
+	balance := loadBalance(w, mainchainInfo)
+	if balance.Cmp(value) != 1 {
+		log.Printf("⚠️ Low balance, need at least %v TON, but your wallet balance is %v TON",
+			tlb.FromNanoTON(value).TON(), tlb.FromNanoTON(balance).TON())
+		return 0
+	}
+
+	log.Printf("🛠  Configuring validator engine for round %v", formattedNextRoundSince)
+
+	keyHash, publicKey := createValidationKey(engine, nextRoundSince, config.ValidatorEngine.AdnlAddress)
+
+	log.Printf("💎 Requesting a loan of %v TON, sending %v TON, for validation round %v",
+		tlb.FromNanoTON(loan).TON(), tlb.FromNanoTON(value), formattedNextRoundSince)
+
+	confirmation := cell.BeginCell().
+		MustStoreUInt(0x654c5074, 32).
+		MustStoreUInt(uint64(nextRoundSince), 32).
+		MustStoreUInt(uint64(maxFactor), 32).
+		MustStoreBigUInt(new(big.Int).SetBytes(loanAddress.Data()), 256).
+		MustStoreBigUInt(adnlAddressBigInt, 256).
+		EndCell()
+
+	signature := engine.Sign(keyHash, confirmation)
+
+	newStakeMsg := cell.BeginCell().
+		MustStoreBigUInt(new(big.Int).SetBytes(publicKey), 256).
+		MustStoreUInt(uint64(nextRoundSince), 32).
+		MustStoreUInt(uint64(maxFactor), 32).
+		MustStoreBigUInt(adnlAddressBigInt, 256).
+		MustStoreRef(cell.BeginCell().MustStoreSlice(signature, 512).EndCell()).
+		EndCell()
+
+	payload := cell.BeginCell().
+		MustStoreUInt(0x12b808d3, 32).
+		MustStoreUInt(uint64(time.Now().Unix()), 64).
+		MustStoreUInt(uint64(nextRoundSince), 32).
+		MustStoreBigCoins(loan).
+		MustStoreBigCoins(minPayment).
+		MustStoreUInt(uint64(validatorRewardShare), 8).
+		MustStoreRef(newStakeMsg).
+		EndCell()
+
+	message := wallet.SimpleMessage(treasuryAddress, tlb.FromNanoTON(value), payload)
+
+	sendRequestLoan(w, message)
+
+	log.Printf("✅ Sent a loan request for round %v", formattedNextRoundSince)
+
+	return
+}
+
+func loadConfig() *Config {
+	config, err := ReadConfig()
+	if err != nil {
+		panic(fmt.Sprintf("Error in reading borrower.yaml: %v", err))
+	}
+	return config
+}
+
+func loadApi(config *Config) *ton.APIClient {
+	liteserverKeyContent, err := os.ReadFile(config.ValidatorEngine.LiteserverKey)
+	if err != nil {
+		panic(fmt.Sprintf("Error in reading liteserver_key: %v", err))
+	}
+	liteserverKey := base64.StdEncoding.EncodeToString(liteserverKeyContent[len(liteserverKeyContent)-32:])
+
+	client := liteclient.NewConnectionPool()
+	ctx := client.StickyContext(context.Background())
+	liteserverAddress := fmt.Sprintf("%v:%v", config.ValidatorEngine.Ip, config.ValidatorEngine.LiteserverPort)
+
+	err = client.AddConnection(ctx, liteserverAddress, liteserverKey)
+	if err != nil {
+		panic(fmt.Sprintf("Error in connecting to liteserver: %v", err))
+	}
+
+	api := ton.NewAPIClient(client)
+	return api
+}
+
+func checkLiteserverIsSync(engine *Engine) {
+	isSync := engine.IsSync()
+	if !isSync {
+		panic("Error, liteserver is out of sync")
+	}
+}
+
+func loadMainchainInfo(api *ton.APIClient) *ton.BlockIDExt {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	mainchainInfo, err := api.CurrentMasterchainInfo(ctx)
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting current masterchain info: %v", err))
+	}
+	return mainchainInfo
+}
+
+func loadBlockchainConfig(api *ton.APIClient, mainchainInfo *ton.BlockIDExt) (uint32, *big.Int, *big.Int, uint32) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	blockchainConfig, err :=
+		api.GetBlockchainConfig(ctx, mainchainInfo, ConfigElection, ConfigCurrentValidators, ConfigStake)
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting blockchain config: %v", err))
+	}
+
+	validatorsElectedFor, _, _, _ := GetElectionConfig(blockchainConfig.Get(ConfigElection))
+	minStake := GetMinStake(blockchainConfig.Get(ConfigStake))
+	currentValidators := blockchainConfig.Get(ConfigCurrentValidators)
+	currentVsetHash := new(big.Int).SetBytes(currentValidators.Hash())
+	_, nextRoundSince := GetVsetTimes(currentValidators)
+
+	return validatorsElectedFor, minStake, currentVsetHash, nextRoundSince
+}
+
+func loadTreasuryState(api *ton.APIClient, mainchainInfo *ton.BlockIDExt,
+	treasuryAddress *address.Address) (*cell.Dictionary, bool) {
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	treasuryAccount, err := api.GetAccount(ctx, mainchainInfo, treasuryAddress)
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting treasury account: %v", err))
+	}
+
+	if !treasuryAccount.IsActive {
+		panic("Error, treasury account is not active")
+	}
+
+	treasuryState, err := api.RunGetMethod(ctx, mainchainInfo, treasuryAddress, "get_treasury_state")
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting treasury state: %v", err))
+	}
+
+	var participations *cell.Dictionary
+	if !treasuryState.MustIsNil(5) {
+		participations, err = treasuryState.MustCell(5).BeginParse().ToDict(32)
+	}
+	if err != nil {
+		panic(fmt.Sprintf("Error in loading participations dictionary: %v", err))
+	}
+
+	stopped := treasuryState.MustInt(6).Cmp(big.NewInt(0)) != 0
+
+	return participations, stopped
+}
+
+func loadAdnlAddress(adnlAddress string) *big.Int {
+	adnlAddressBytes, err := hex.DecodeString(adnlAddress)
+	if err != nil {
+		panic(fmt.Sprintf("Error in decoding adnl address: %v", err))
+	}
+
 	adnlAddressBigInt := new(big.Int).SetBytes(adnlAddressBytes)
+	return adnlAddressBigInt
+}
 
+func loadWallet(config Wallet, api *ton.APIClient) *wallet.Wallet {
+	var version wallet.Version
+	if config.Version == "v4r2" {
+		version = wallet.V4R2
+	} else if config.Version == "v3r2" {
+		version = wallet.V3R2
+	} else {
+		panic(fmt.Sprintf("Error, invalid wallet version, expected v4r2 or v3r2 but got: %v", config.Version))
+	}
+
+	secret, err := os.ReadFile(config.Path)
+	if err != nil {
+		panic(fmt.Sprintf("Error in reading wallet secret: %v", err))
+	}
+
+	var w *wallet.Wallet
+	if config.Type == "mnemonic" {
+		seed := strings.Split(strings.Trim(string(secret), " \n\t"), " ")
+		w, err = wallet.FromSeed(api, seed, version)
+	} else if config.Type == "binary" {
+		w, err = wallet.FromPrivateKey(api, secret, version)
+	} else {
+		panic(fmt.Sprintf("Error, invalid wallet type, expected mnemonic or binary but got: %v", config.Type))
+	}
+	if err != nil {
+		panic(fmt.Sprintf("Error in loading wallet: %v", err))
+	}
+
+	return w
+}
+
+func loadLoanAddress(validatorAddress *address.Address, treasuryAddress *address.Address, nextRoundSince uint32,
+	api *ton.APIClient, mainchainInfo *ton.BlockIDExt) *address.Address {
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	slice := cell.BeginCell().MustStoreAddr(validatorAddress).EndCell().BeginParse()
+
+	res, err := api.RunGetMethod(ctx, mainchainInfo, treasuryAddress, "get_loan_address", slice, nextRoundSince)
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting loan address: %v", err))
+	}
+	loanAddress := res.MustSlice(0).MustLoadAddr()
+	return loanAddress
+}
+
+func loadParticipation(participations *cell.Dictionary, nextRoundSince uint32) *Participation {
 	participation := Participation{}
 	if participations != nil {
 		p := participations.GetByIntKey(big.NewInt(int64(nextRoundSince)))
@@ -235,135 +468,70 @@ func Process() {
 			participation = LoadParticipation(p)
 		}
 	}
+	return &participation
+}
 
-	key := cell.BeginCell().MustStoreBigUInt(new(big.Int).SetBytes(validatorAddress.Data()), 256).EndCell()
-	if participation.Requests != nil && participation.Requests.Get(key) != nil {
-		log.Printf("⏩ Already participated, skipping")
-		return
-	}
-
-	if participation.State != ParticipationOpen {
-		log.Printf("⏩ Loan requests are not acceted, skipping")
-		return
-	}
-
-	loan, err := tlb.FromTON(config.Borrow.Loan)
+func loadBorrowConfig(config Borrow, minStake *big.Int) (*big.Int, *big.Int, *big.Int, uint32, uint8) {
+	stake, err := tlb.FromTON(config.Stake)
 	if err != nil {
-		log.Printf("❌ Error, invalid loan amount")
-		return
+		panic("Error, invalid stake amount")
+	}
+
+	loan, err := tlb.FromTON(config.Loan)
+	if err != nil {
+		panic("Error, invalid loan amount")
 	}
 	if loan.NanoTON().Cmp(big.NewInt(0)) == 0 {
 		loan = tlb.FromNanoTON(minStake)
 	}
 
-	punishRes, err := api.RunGetMethod(ctx, masterchainInfo, treasuryAddress, "get_max_punishment", loan.NanoTON())
+	minPayment, err := tlb.FromTON(config.MinPayment)
 	if err != nil {
-		log.Printf("❌ Error in getting max punishment: %v", err)
-		return
+		panic("Error, invalid min payment")
 	}
-	maxPunishment := punishRes.MustInt(0)
 
-	requestLoanFee, err := tonlib.GetRequestLoadFee(timedCtx, *treasuryAddress)
+	if config.MaxFactorRatio < 1 {
+		panic("Error, max_factor_ratio must be >= 1.0")
+	}
+	maxFactor := uint32(config.MaxFactorRatio * 65536)
+
+	return stake.NanoTON(), loan.NanoTON(), minPayment.NanoTON(), maxFactor, config.ValidatorRewardShare
+}
+
+func loadBalance(w *wallet.Wallet, mainchainInfo *ton.BlockIDExt) *big.Int {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	balance, err := w.GetBalance(ctx, mainchainInfo)
 	if err != nil {
-		log.Printf("❌ Error in getting fees: %v", err)
-		return
+		panic(fmt.Sprintf("Error in getting wallet balance: %v", err))
 	}
 
-	stake, err := tlb.FromTON(config.Borrow.Stake)
-	if err != nil {
-		log.Printf("❌ Error, invalid stake amount")
-		return
-	}
+	return balance.NanoTON()
+}
 
-	minPayment, err := tlb.FromTON(config.Borrow.MinPayment)
-	if err != nil {
-		log.Printf("❌ Error, invalid min payment")
-		return
-	}
-
-	value := big.NewInt(1000000000)
-	value = value.Add(value, requestLoanFee)
-	value = value.Add(value, maxPunishment)
-	value = value.Add(value, stake.NanoTON())
-	value = value.Add(value, minPayment.NanoTON())
-
-	balance, err := w.GetBalance(ctx, masterchainInfo)
-	if err != nil {
-		log.Printf("❌ Error in getting wallet balance: %v", err)
-		return
-	}
-
-	if balance.NanoTON().Cmp(value) != 1 {
-		log.Printf("⚠️ Low balance, need at least %v TON, but your wallet balance is %v TON",
-			tlb.FromNanoTON(value), balance.TON())
-		return
-	}
-
-	log.Printf("💎 Requesting a loan of: %v TON, at round: %v, sending %v TON",
-		loan.TON(), time.Unix(int64(nextRoundSince), 0), tlb.FromNanoTON(value))
-
+func createValidationKey(engine *Engine, nextRoundSince uint32, adnlAddress string) (string, []byte) {
 	expireAt := nextRoundSince + 86400
 
-	keyHash := console.NewKey(timedCtx)
-	if keyHash == "" {
-		log.Printf("❌ Error in creating new key")
-		return
-	}
+	keyHash := engine.NewKey()
 
-	addedPermKey := console.AddPermKey(timedCtx, keyHash, nextRoundSince, expireAt)
-	if addedPermKey != "success" {
-		log.Printf("❌ Error in adding permanent key")
-		return
-	}
+	engine.AddPermKey(keyHash, nextRoundSince, expireAt)
 
-	addedTempKey := console.AddTempKey(timedCtx, keyHash, expireAt)
-	if addedTempKey != "success" {
-		log.Printf("❌ Error in adding temporary key")
-		return
-	}
+	engine.AddTempKey(keyHash, expireAt)
 
-	addedValidatorAddr := console.AddValidatorAddr(timedCtx, keyHash, config.ValidatorEngine.AdnlAddress, expireAt)
-	if addedValidatorAddr != "success" {
-		log.Printf("❌ Error in adding validator address")
-		return
-	}
+	engine.AddValidatorAddr(keyHash, adnlAddress, expireAt)
 
-	publicKey := console.ExportPub(timedCtx, keyHash)
-	if publicKey == "" {
-		log.Printf("❌ Error in exporting public key")
-		return
-	}
+	publicKey := engine.ExportPub(keyHash)
 
-	newStakeMsg := cell.BeginCell().
-		MustStoreUInt(0x654c5074, 32).
-		MustStoreUInt(uint64(nextRoundSince), 32).
-		MustStoreUInt(maxFactor, 32).
-		MustStoreBigUInt(new(big.Int).SetBytes(loanAddress.Data()), 256).
-		MustStoreBigUInt(adnlAddressBigInt, 256).
-		EndCell()
+	return keyHash, publicKey
+}
 
-	signature := console.Sign(timedCtx, keyHash, newStakeMsg)
-	if signature == "" {
-		log.Printf("❌ Error in signing loan request")
-		return
-	}
+func sendRequestLoan(w *wallet.Wallet, message *wallet.Message) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
-	payload := cell.BeginCell().
-		MustStoreUInt(0x12b808d3, 32).
-		MustStoreUInt(uint64(time.Now().Unix()), 64).
-		MustStoreUInt(uint64(nextRoundSince), 32).
-		MustStoreBigCoins(loan.NanoTON()).
-		MustStoreBigCoins(minPayment.NanoTON()).
-		MustStoreUInt(uint64(config.Borrow.ValidatorRewardShare), 8).
-		MustStoreRef(newStakeMsg).
-		EndCell()
-	message := wallet.SimpleMessage(treasuryAddress, tlb.FromNanoTON(value), payload)
-
-	tx, _, err := w.SendWaitTransaction(ctx, message)
+	_, _, err := w.SendWaitTransaction(ctx, message)
 	if err != nil {
-		log.Printf("❌ Error in sending loan request: %v", err)
-		return
+		panic(fmt.Sprintf("Error in sending loan request: %v", err))
 	}
-
-	log.Printf("✅ Sent %v", tx)
 }
