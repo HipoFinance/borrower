@@ -1,0 +1,12 @@
+[Unit]
+Description=the Borrower for hTON: Hipo liquid staking protocol
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/go/bin
+ExecStart=/root/go/bin/borrower
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
