@@ -79,7 +79,7 @@ func loop(stop <-chan struct{}) {
 			}
 			requestWait = requestWait.Round(time.Second)
 			until := time.Now().Add(requestWait).Format(borrower.TimeFormat)
-			log.Printf("💤 Next request in %v at %v", requestWait, until)
+			log.Printf("   💤 Next request in %v at %v", requestWait, until)
 			requestTimer.Reset(requestWait)
 			continue
 

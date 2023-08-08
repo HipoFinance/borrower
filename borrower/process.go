@@ -186,7 +186,7 @@ func Request() (wait time.Duration) {
 	defer func() {
 		if err := recover(); err != nil {
 			wait = 0
-			log.Printf("❌ %s", err)
+			log.Printf("   ❌ %s", err)
 		}
 	}()
 
@@ -213,7 +213,7 @@ func Request() (wait time.Duration) {
 	wait = time.Until(time.Unix(int64(nextRoundSince+30), 0))
 
 	if !config.Borrow.Active {
-		log.Printf("↩️  Borrow config is inactive")
+		log.Printf("   ↩️  Borrow config is inactive")
 		return 0
 	}
 
@@ -234,17 +234,17 @@ func Request() (wait time.Duration) {
 	requestLoanFee := tonlib.GetRequestLoanFee(*treasuryAddress)
 
 	if stopped {
-		log.Printf("🔲 Treasury is stopped")
+		log.Printf("   🔲 Treasury is stopped")
 		return 0
 	}
 
 	participation := loadParticipation(participations, nextRoundSince)
 	if participation.Requests != nil && participation.Requests.Get(validatorKey) != nil {
-		log.Printf("⏩ Already participated in round %v", formattedNextRoundSince)
+		log.Printf("   ⏩ Already participated in round %v", formattedNextRoundSince)
 		return
 	}
 	if participation.State != ParticipationOpen {
-		log.Printf("⏩ Loan requests are not accepted at the moment for round %v", formattedNextRoundSince)
+		log.Printf("   ⏩ Loan requests are not accepted at the moment for round %v", formattedNextRoundSince)
 		return
 	}
 
@@ -256,16 +256,16 @@ func Request() (wait time.Duration) {
 
 	balance := loadBalance(w, mainchainInfo)
 	if balance.Cmp(value) != 1 {
-		log.Printf("⚠️ Low balance, need at least %v TON, but your wallet balance is %v TON",
+		log.Printf("   ⚠️  Low balance, need at least %v TON, but your wallet balance is %v TON",
 			tlb.FromNanoTON(value).TON(), tlb.FromNanoTON(balance).TON())
 		return 0
 	}
 
-	log.Printf("🛠  Configuring validator engine for round %v", formattedNextRoundSince)
+	log.Printf("   🛠  Configuring validator engine for round %v", formattedNextRoundSince)
 
 	keyHash, publicKey := createValidationKey(engine, nextRoundSince, config.ValidatorEngine.AdnlAddress)
 
-	log.Printf("💎 Requesting a loan of %v TON, sending %v TON, for validation round %v",
+	log.Printf("   💎 Requesting a loan of %v TON, sending %v TON, for validation round %v",
 		tlb.FromNanoTON(loan).TON(), tlb.FromNanoTON(value), formattedNextRoundSince)
 
 	confirmation := cell.BeginCell().
@@ -300,7 +300,7 @@ func Request() (wait time.Duration) {
 
 	sendRequestLoan(w, message)
 
-	log.Printf("✅ Sent a loan request for round %v", formattedNextRoundSince)
+	log.Printf("   ✅ Sent a loan request for round %v", formattedNextRoundSince)
 
 	return
 }
