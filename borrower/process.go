@@ -398,7 +398,7 @@ func loadTreasuryState(api *ton.APIClient, mainchainInfo *ton.BlockIDExt,
 		panic(fmt.Sprintf("Error in loading participations dictionary: %v", err))
 	}
 
-	stopped := treasuryState.MustInt(6).Cmp(big.NewInt(0)) != 0
+	stopped := treasuryState.MustInt(7).Cmp(big.NewInt(0)) != 0
 
 	return participations, stopped
 }
