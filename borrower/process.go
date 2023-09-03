@@ -260,8 +260,10 @@ func Request() (wait time.Duration) {
 	}
 
 	value := big.NewInt(1000000000)
+	if maxPunishment.Cmp(value) == 1 {
+		value = maxPunishment
+	}
 	value = value.Add(value, requestLoanFee)
-	value = value.Add(value, maxPunishment)
 	value = value.Add(value, minPayment)
 	value = value.Add(value, stake)
 
