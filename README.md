@@ -65,15 +65,15 @@ Rent a server that has the [minimum hardware requirements](https://docs.ton.org/
 
     Note 2: Follow [mytonctrl installation manual](https://github.com/ton-blockchain/mytonctrl/blob/master/docs/en/manual-ubuntu.md), sections 1 and 2. There is no need to create wallets for other steps of the manual. The borrower needs a sync liteserver, so you may wait at this step for `mytonctrl` to get synced.
 
-    Note 3: If you got the server from DigitalOcean or other providers, those servers sometimes come with no swap partition. Since the validator requires lots of RAM, your validator may get killed frequently. If you looked at the logs and found out about OOM errors, creating a swap partition might fix the problem.
-
     After the installation, run `mytonctrl` executable. Then run the `status` command. Now your node should be syncing or maybe already synced. Just note the "ADNL address of local validator" in the output of the `status` command, since you'll need it to configure Borrower.
+
+    Note 3: If you got an error like "Check `total_wt >= W[a]` failed" when running the status command on the testnet, use `status fast` instead.
 
 2. Install Borrower. Either:
 
     - download a pre-built and released version from the releases section of Github. Copy it to this path: `~/go/bin`, for example, if you're using a root user copy it to `/root/go/bin`.
 
-    - or download from the source, install `go` build tools, and then run `go install`.
+    - or download from the source, install `go` by runnig `snap install go --classic`, and then run `go install` in the downloaded git repository.
 
 3. Download the `borrower.yaml` template config file from this repository. Copy it to `~/go/bin` alongside the `borrower` executable. Then edit it and set your configuration:
 
@@ -85,7 +85,7 @@ Rent a server that has the [minimum hardware requirements](https://docs.ton.org/
 
     - `validator_engine`: Configure your validator here, specifically enter your ADNL address from the `status` command of `mytonctrl`.
 
-    - `tonlib_cli`: Configure `tonlib-cli` here. You may need to build it from the source.
+    - `tonlib_cli`: Configure `tonlib-cli` here. You may need to build it from the source using `cd /usr/bin/ton && cmake --build . --target tonlib-cli`. You may need to stop `validator.service` before compilation.
 
 4. Install the service file. Copy `borrower.service` to `/etc/systemd/system` and edit it according to your configuration. Then run these one by one:
 
