@@ -326,7 +326,7 @@ func loadConfig() *Config {
 	return config
 }
 
-func loadApi(config *Config) *ton.APIClient {
+func loadApi(config *Config) ton.APIClientWrapped {
 	liteserverKeyContent, err := os.ReadFile(config.ValidatorEngine.LiteserverKey)
 	if err != nil {
 		panic(fmt.Sprintf("Error in reading liteserver_key: %v", err))
@@ -342,7 +342,7 @@ func loadApi(config *Config) *ton.APIClient {
 		panic(fmt.Sprintf("Error in connecting to liteserver: %v", err))
 	}
 
-	api := ton.NewAPIClient(client)
+	api := ton.NewAPIClient(client).WithRetry(10)
 	return api
 }
 
@@ -353,7 +353,7 @@ func checkLiteserverIsSync(engine *Engine) {
 	}
 }
 
-func loadMainchainInfo(api *ton.APIClient) *ton.BlockIDExt {
+func loadMainchainInfo(api ton.APIClientWrapped) *ton.BlockIDExt {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -364,7 +364,7 @@ func loadMainchainInfo(api *ton.APIClient) *ton.BlockIDExt {
 	return mainchainInfo
 }
 
-func loadBlockchainConfig(api *ton.APIClient, mainchainInfo *ton.BlockIDExt) (uint32, *big.Int, *big.Int, uint32) {
+func loadBlockchainConfig(api ton.APIClientWrapped, mainchainInfo *ton.BlockIDExt) (uint32, *big.Int, *big.Int, uint32) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -383,7 +383,7 @@ func loadBlockchainConfig(api *ton.APIClient, mainchainInfo *ton.BlockIDExt) (ui
 	return validatorsElectedFor, minStake, currentVsetHash, nextRoundSince
 }
 
-func loadTreasuryState(api *ton.APIClient, mainchainInfo *ton.BlockIDExt,
+func loadTreasuryState(api ton.APIClientWrapped, mainchainInfo *ton.BlockIDExt,
 	treasuryAddress *address.Address) (*cell.Dictionary, bool) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -426,7 +426,7 @@ func loadAdnlAddress(adnlAddress string) *big.Int {
 	return adnlAddressBigInt
 }
 
-func loadWallet(config Wallet, api *ton.APIClient) *wallet.Wallet {
+func loadWallet(config Wallet, api ton.APIClientWrapped) *wallet.Wallet {
 	var version wallet.Version
 	if config.Version == "v4r2" {
 		version = wallet.V4R2
@@ -458,7 +458,7 @@ func loadWallet(config Wallet, api *ton.APIClient) *wallet.Wallet {
 }
 
 func loadLoanAddress(validatorAddress *address.Address, treasuryAddress *address.Address, nextRoundSince uint32,
-	api *ton.APIClient, mainchainInfo *ton.BlockIDExt) *address.Address {
+	api ton.APIClientWrapped, mainchainInfo *ton.BlockIDExt) *address.Address {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
