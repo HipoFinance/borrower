@@ -1,6 +1,9 @@
 # Friendly address of hTON treasury.
 treasury: kQAjvBlA6Gt0BZhvM9_PgBDVv1_EkRuMYZ3XxdaXlKRyCeaI
 
+# The path to the ton global config.
+global_config: /usr/bin/ton/global.config.json
+
 # Configure borrowing.
 borrow:
   # Whether the borrowing functionality is active or not.
@@ -46,17 +49,11 @@ validator_engine:
   # The path to the server public key.
   server_key: /var/ton-work/keys/server.pub
 
-  # The path to the liteserver public key.
-  liteserver_key: /var/ton-work/keys/liteserver.pub
-
   # The IP address of the validator engine.
   ip: "127.0.0.1"
 
   # The port for control interface.
   control_port: 6269
-
-  # The port for liteserver interface.
-  liteserver_port: 39174
 
   # Find the hex encoded ADNL address of your validator in `mytonctrl` using the `status` command.
   adnl_address:
@@ -65,6 +62,3 @@ validator_engine:
 tonlib_cli:
   # The path to the tonlib-cli executable.
   executable: /usr/bin/ton/tonlib/tonlib-cli
-
-  # The path to the ton global config.
-  global_config: /usr/bin/ton/global.config.json

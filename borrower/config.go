@@ -12,6 +12,7 @@ var ConfigFile = "borrower.yaml"
 
 type Config struct {
 	Treasury        string
+	GlobalConfig    string `yaml:"global_config"`
 	Borrow          Borrow
 	Wallet          Wallet
 	ValidatorEngine ValidatorEngine `yaml:"validator_engine"`
@@ -45,8 +46,7 @@ type ValidatorEngine struct {
 }
 
 type TonlibCli struct {
-	Executable   string
-	GlobalConfig string `yaml:"global_config"`
+	Executable string
 }
 
 func ReadConfig() (config *Config, err error) {

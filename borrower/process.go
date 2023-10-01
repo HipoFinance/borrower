@@ -2,7 +2,6 @@ package borrower
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -29,21 +28,17 @@ func Process() (wait time.Duration) {
 
 	config := loadConfig()
 
-	api := loadApi(config)
+	api, ctx := loadApi(config)
 
-	tonlib := NewTonlib(config.TonlibCli.Executable, config.TonlibCli.GlobalConfig)
-
-	engine := NewValidatorEngine(config.ValidatorEngine)
+	tonlib := NewTonlib(config.TonlibCli.Executable, config.GlobalConfig)
 
 	treasuryAddress := address.MustParseAddr(config.Treasury)
 
-	checkLiteserverIsSync(engine)
+	mainchainInfo := loadMainchainInfo(api, ctx)
 
-	mainchainInfo := loadMainchainInfo(api)
+	validatorsElectedFor, _, currentVsetHash, nextRoundSince := loadBlockchainConfig(api, ctx, mainchainInfo)
 
-	validatorsElectedFor, _, currentVsetHash, nextRoundSince := loadBlockchainConfig(api, mainchainInfo)
-
-	participations, _ := loadTreasuryState(api, mainchainInfo, treasuryAddress)
+	participations, _ := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
 	participateSince := tonlib.GetParticipateSince(*treasuryAddress)
 
@@ -74,7 +69,7 @@ func Process() (wait time.Duration) {
 		}
 		now := uint32(time.Now().Unix())
 		vsetChanged := participation.CurrentVsetHash.Cmp(currentVsetHash) != 0
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
 		if participation.State == ParticipationOpen {
@@ -203,9 +198,9 @@ func Request() (wait time.Duration) {
 
 	config := loadConfig()
 
-	api := loadApi(config)
+	api, ctx := loadApi(config)
 
-	tonlib := NewTonlib(config.TonlibCli.Executable, config.TonlibCli.GlobalConfig)
+	tonlib := NewTonlib(config.TonlibCli.Executable, config.GlobalConfig)
 
 	engine := NewValidatorEngine(config.ValidatorEngine)
 
@@ -213,11 +208,11 @@ func Request() (wait time.Duration) {
 
 	checkLiteserverIsSync(engine)
 
-	mainchainInfo := loadMainchainInfo(api)
+	mainchainInfo := loadMainchainInfo(api, ctx)
 
-	_, minStake, _, nextRoundSince := loadBlockchainConfig(api, mainchainInfo)
+	_, minStake, _, nextRoundSince := loadBlockchainConfig(api, ctx, mainchainInfo)
 
-	participations, stopped := loadTreasuryState(api, mainchainInfo, treasuryAddress)
+	participations, stopped := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
 	formattedNextRoundSince := time.Unix(int64(nextRoundSince), 0).Format(TimeFormat)
 
@@ -236,7 +231,7 @@ func Request() (wait time.Duration) {
 	validatorAddress.SetTestnetOnly(treasuryAddress.IsTestnetOnly())
 	validatorKey := cell.BeginCell().MustStoreBigUInt(new(big.Int).SetBytes(validatorAddress.Data()), 256).EndCell()
 
-	loanAddress := loadLoanAddress(validatorAddress, treasuryAddress, nextRoundSince, api, mainchainInfo)
+	loanAddress := loadLoanAddress(validatorAddress, treasuryAddress, nextRoundSince, api, ctx, mainchainInfo)
 
 	stake, loan, minPayment, maxFactor, validatorRewardShare := loadBorrowConfig(config.Borrow, minStake)
 
@@ -326,24 +321,17 @@ func loadConfig() *Config {
 	return config
 }
 
-func loadApi(config *Config) ton.APIClientWrapped {
-	liteserverKeyContent, err := os.ReadFile(config.ValidatorEngine.LiteserverKey)
-	if err != nil {
-		panic(fmt.Sprintf("Error in reading liteserver_key: %v", err))
-	}
-	liteserverKey := base64.StdEncoding.EncodeToString(liteserverKeyContent[len(liteserverKeyContent)-32:])
-
+func loadApi(config *Config) (ton.APIClientWrapped, context.Context) {
 	client := liteclient.NewConnectionPool()
-	ctx := client.StickyContext(context.Background())
-	liteserverAddress := fmt.Sprintf("%v:%v", config.ValidatorEngine.Ip, config.ValidatorEngine.LiteserverPort)
-
-	err = client.AddConnection(ctx, liteserverAddress, liteserverKey)
+	err := client.AddConnectionsFromConfigFile(config.GlobalConfig)
 	if err != nil {
-		panic(fmt.Sprintf("Error in connecting to liteserver: %v", err))
+		panic(fmt.Sprintf("Error in loading global config: %v", err))
 	}
+
+	ctx := client.StickyContext(context.Background())
 
 	api := ton.NewAPIClient(client).WithRetry(10)
-	return api
+	return api, ctx
 }
 
 func checkLiteserverIsSync(engine *Engine) {
@@ -353,8 +341,8 @@ func checkLiteserverIsSync(engine *Engine) {
 	}
 }
 
-func loadMainchainInfo(api ton.APIClientWrapped) *ton.BlockIDExt {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func loadMainchainInfo(api ton.APIClientWrapped, ctx context.Context) *ton.BlockIDExt {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	mainchainInfo, err := api.CurrentMasterchainInfo(ctx)
@@ -364,8 +352,8 @@ func loadMainchainInfo(api ton.APIClientWrapped) *ton.BlockIDExt {
 	return mainchainInfo
 }
 
-func loadBlockchainConfig(api ton.APIClientWrapped, mainchainInfo *ton.BlockIDExt) (uint32, *big.Int, *big.Int, uint32) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func loadBlockchainConfig(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt) (uint32, *big.Int, *big.Int, uint32) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	blockchainConfig, err :=
@@ -383,10 +371,10 @@ func loadBlockchainConfig(api ton.APIClientWrapped, mainchainInfo *ton.BlockIDEx
 	return validatorsElectedFor, minStake, currentVsetHash, nextRoundSince
 }
 
-func loadTreasuryState(api ton.APIClientWrapped, mainchainInfo *ton.BlockIDExt,
+func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
 	treasuryAddress *address.Address) (*cell.Dictionary, bool) {
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	treasuryAccount, err := api.GetAccount(ctx, mainchainInfo, treasuryAddress)
@@ -458,9 +446,9 @@ func loadWallet(config Wallet, api ton.APIClientWrapped) *wallet.Wallet {
 }
 
 func loadLoanAddress(validatorAddress *address.Address, treasuryAddress *address.Address, nextRoundSince uint32,
-	api ton.APIClientWrapped, mainchainInfo *ton.BlockIDExt) *address.Address {
+	api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt) *address.Address {
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	slice := cell.BeginCell().MustStoreAddr(validatorAddress).EndCell().BeginParse()
