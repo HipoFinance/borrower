@@ -37,10 +37,12 @@ func (s ParticipationState) String() string {
 
 type Participation struct {
 	State           ParticipationState
+	Size            uint16
 	Sorted          *cell.Dictionary
-	RequestsSize    uint16
 	Requests        *cell.Dictionary
+	Rejected        *cell.Dictionary
 	Accepted        *cell.Dictionary
+	Accrued         *cell.Dictionary
 	Staked          *cell.Dictionary
 	Recovering      *cell.Dictionary
 	TotalStaked     *big.Int
@@ -54,10 +56,12 @@ func LoadParticipation(c *cell.Cell) Participation {
 	s := c.BeginParse()
 	return Participation{
 		State:           ParticipationState(s.MustLoadUInt(3)),
+		Size:            uint16(s.MustLoadUInt(16)),
 		Sorted:          s.MustLoadDict(112),
-		RequestsSize:    uint16(s.MustLoadUInt(16)),
 		Requests:        s.MustLoadDict(256),
+		Rejected:        s.MustLoadDict(256),
 		Accepted:        s.MustLoadDict(256),
+		Accrued:         s.MustLoadDict(256),
 		Staked:          s.MustLoadDict(256),
 		Recovering:      s.MustLoadDict(256),
 		TotalStaked:     s.MustLoadBigCoins(),
