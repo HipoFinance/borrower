@@ -512,7 +512,7 @@ func loadBalance(w *wallet.Wallet, mainchainInfo *ton.BlockIDExt) *big.Int {
 }
 
 func createValidationKey(engine *Engine, nextRoundSince uint32, adnlAddress string) (string, []byte) {
-	expireAt := nextRoundSince + 86400
+	expireAt := nextRoundSince + 300
 
 	keyHash := engine.NewKey()
 
@@ -528,7 +528,7 @@ func createValidationKey(engine *Engine, nextRoundSince uint32, adnlAddress stri
 }
 
 func sendRequestLoan(w *wallet.Wallet, message *wallet.Message) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	_, _, err := w.SendWaitTransaction(ctx, message)
