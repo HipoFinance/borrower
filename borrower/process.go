@@ -392,14 +392,14 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 	}
 
 	var participations *cell.Dictionary
-	if !treasuryState.MustIsNil(5) {
-		participations, err = treasuryState.MustCell(5).BeginParse().ToDict(32)
+	if !treasuryState.MustIsNil(7) {
+		participations, err = treasuryState.MustCell(7).BeginParse().ToDict(32)
 	}
 	if err != nil {
 		panic(fmt.Sprintf("Error in loading participations dictionary: %v", err))
 	}
 
-	stopped := treasuryState.MustInt(7).Cmp(big.NewInt(0)) != 0
+	stopped := treasuryState.MustInt(9).Cmp(big.NewInt(0)) != 0
 
 	return participations, stopped
 }
