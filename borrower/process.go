@@ -188,7 +188,7 @@ func Process() (wait time.Duration) {
 	return
 }
 
-func Request() (wait time.Duration) {
+func RequestLoan() (wait time.Duration) {
 	defer func() {
 		if err := recover(); err != nil {
 			wait = 0
@@ -246,8 +246,17 @@ func Request() (wait time.Duration) {
 
 	participation := loadParticipation(participations, nextRoundSince)
 	if participation.Requests != nil && participation.Requests.Get(validatorKey) != nil {
-		log.Printf("   ⏩ Already participated in round %v", formattedNextRoundSince)
-		return
+		cell := participation.Requests.Get(validatorKey)
+		r := LoadRequest(cell)
+		if r.MinPayment == minPayment && r.ValidatorRewardShare == validatorRewardShare && r.LoanAmount == loan {
+			log.Printf("   ⏩ Already participated in round %v", formattedNextRoundSince)
+			return
+		} else {
+			log.Printf("   ✏️  Updating last request to min_payment: %v, validator_reward_share: %v, loan: %v",
+				minPayment, validatorRewardShare, loan)
+			log.Printf("   🔧 Find the key hex for validator key expiring at %v", expirationTime((nextRoundSince)))
+			log.Printf("   🔧 Delete the perm key in validator-console with command `delpermkey`")
+		}
 	}
 	if participation.State != ParticipationOpen {
 		log.Printf("   ⏩ Loan requests are not accepted at the moment for round %v", formattedNextRoundSince)
@@ -265,7 +274,7 @@ func Request() (wait time.Duration) {
 	balance := loadBalance(w, mainchainInfo)
 	if balance.Cmp(value) != 1 {
 		log.Printf("   ⚠️  Low balance, need at least %v TON, but your wallet balance is %v TON",
-			tlb.FromNanoTON(value).TON(), tlb.FromNanoTON(balance).TON())
+			tlb.FromNanoTON(value).String(), tlb.FromNanoTON(balance).String())
 		return 0
 	}
 
@@ -274,7 +283,7 @@ func Request() (wait time.Duration) {
 	keyHash, publicKey := createValidationKey(engine, nextRoundSince, config.ValidatorEngine.AdnlAddress)
 
 	log.Printf("   💎 Requesting a loan of %v TON, sending %v TON, for validation round %v",
-		tlb.FromNanoTON(loan).TON(), tlb.FromNanoTON(value), formattedNextRoundSince)
+		tlb.FromNanoTON(loan).String(), tlb.FromNanoTON(value), formattedNextRoundSince)
 
 	confirmation := cell.BeginCell().
 		MustStoreUInt(0x654c5074, 32).
@@ -482,7 +491,7 @@ func loadBorrowConfig(config Borrow, minStake *big.Int) (*big.Int, *big.Int, *bi
 	if err != nil {
 		panic("Error, invalid loan amount")
 	}
-	if loan.NanoTON().Cmp(big.NewInt(0)) == 0 {
+	if loan.Nano().Cmp(big.NewInt(0)) == 0 {
 		loan = tlb.FromNanoTON(minStake)
 	}
 
@@ -496,7 +505,7 @@ func loadBorrowConfig(config Borrow, minStake *big.Int) (*big.Int, *big.Int, *bi
 	}
 	maxFactor := uint32(config.MaxFactorRatio * 65536)
 
-	return stake.NanoTON(), loan.NanoTON(), minPayment.NanoTON(), maxFactor, config.ValidatorRewardShare
+	return stake.Nano(), loan.Nano(), minPayment.Nano(), maxFactor, config.ValidatorRewardShare
 }
 
 func loadBalance(w *wallet.Wallet, mainchainInfo *ton.BlockIDExt) *big.Int {
@@ -508,11 +517,11 @@ func loadBalance(w *wallet.Wallet, mainchainInfo *ton.BlockIDExt) *big.Int {
 		panic(fmt.Sprintf("Error in getting wallet balance: %v", err))
 	}
 
-	return balance.NanoTON()
+	return balance.Nano()
 }
 
 func createValidationKey(engine *Engine, nextRoundSince uint32, adnlAddress string) (string, []byte) {
-	expireAt := nextRoundSince + 300
+	expireAt := expirationTime(nextRoundSince)
 
 	keyHash := engine.NewKey()
 
@@ -525,6 +534,10 @@ func createValidationKey(engine *Engine, nextRoundSince uint32, adnlAddress stri
 	publicKey := engine.ExportPub(keyHash)
 
 	return keyHash, publicKey
+}
+
+func expirationTime(nextRoundSince uint32) uint32 {
+	return nextRoundSince + 300
 }
 
 func sendRequestLoan(w *wallet.Wallet, message *wallet.Message) {

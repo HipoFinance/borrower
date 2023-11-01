@@ -73,7 +73,7 @@ func loop(stop <-chan struct{}) {
 			continue
 
 		case <-requestTimer.C:
-			requestWait := borrower.Request()
+			requestWait := borrower.RequestLoan()
 			if requestWait <= 0 {
 				requestWait = 1 * time.Minute
 			}
