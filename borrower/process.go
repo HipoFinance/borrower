@@ -36,7 +36,7 @@ func Process() (wait time.Duration) {
 
 	mainchainInfo := loadMainchainInfo(api, ctx)
 
-	validatorsElectedFor, _, currentVsetHash, nextRoundSince := loadBlockchainConfig(api, ctx, mainchainInfo)
+	validatorsElectedFor, _, currentVsetHash, nextRoundSince, _ := loadBlockchainConfig(api, ctx, mainchainInfo)
 
 	participations, _ := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
@@ -210,13 +210,13 @@ func RequestLoan() (wait time.Duration) {
 
 	mainchainInfo := loadMainchainInfo(api, ctx)
 
-	_, minStake, _, nextRoundSince := loadBlockchainConfig(api, ctx, mainchainInfo)
+	_, minStake, _, nextRoundSince, stakeHeldFor := loadBlockchainConfig(api, ctx, mainchainInfo)
 
 	participations, stopped := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
 	formattedNextRoundSince := time.Unix(int64(nextRoundSince), 0).Format(TimeFormat)
 
-	wait = time.Until(time.Unix(int64(nextRoundSince+30), 0))
+	wait = time.Until(time.Unix(int64(nextRoundSince+stakeHeldFor+60), 0))
 
 	if !config.Borrow.Active {
 		log.Printf("   ↩️  Borrow config is inactive")
@@ -361,7 +361,8 @@ func loadMainchainInfo(api ton.APIClientWrapped, ctx context.Context) *ton.Block
 	return mainchainInfo
 }
 
-func loadBlockchainConfig(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt) (uint32, *big.Int, *big.Int, uint32) {
+func loadBlockchainConfig(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt) (
+	uint32, *big.Int, *big.Int, uint32, uint32) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -371,13 +372,13 @@ func loadBlockchainConfig(api ton.APIClientWrapped, ctx context.Context, maincha
 		panic(fmt.Sprintf("Error in getting blockchain config: %v", err))
 	}
 
-	validatorsElectedFor, _, _, _ := GetElectionConfig(blockchainConfig.Get(ConfigElection))
+	validatorsElectedFor, _, _, stakeHeldFor := GetElectionConfig(blockchainConfig.Get(ConfigElection))
 	minStake := GetMinStake(blockchainConfig.Get(ConfigStake))
 	currentValidators := blockchainConfig.Get(ConfigCurrentValidators)
 	currentVsetHash := new(big.Int).SetBytes(currentValidators.Hash())
 	_, nextRoundSince := GetVsetTimes(currentValidators)
 
-	return validatorsElectedFor, minStake, currentVsetHash, nextRoundSince
+	return validatorsElectedFor, minStake, currentVsetHash, nextRoundSince, stakeHeldFor
 }
 
 func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
