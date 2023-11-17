@@ -248,7 +248,9 @@ func RequestLoan() (wait time.Duration) {
 	if participation.Requests != nil && participation.Requests.Get(validatorKey) != nil {
 		cell := participation.Requests.Get(validatorKey)
 		r := LoadRequest(cell)
-		if r.MinPayment == minPayment && r.ValidatorRewardShare == validatorRewardShare && r.LoanAmount == loan {
+		if r.MinPayment.Cmp(minPayment) == 0 &&
+			r.ValidatorRewardShare == validatorRewardShare &&
+			r.LoanAmount.Cmp(loan) == 0 {
 			log.Printf("   ⏩ Already participated in round %v", formattedNextRoundSince)
 			return
 		} else {
