@@ -254,8 +254,6 @@ func RequestLoan() (wait time.Duration) {
 		} else {
 			log.Printf("   ✏️  Updating last request to min_payment: %v, validator_reward_share: %v, loan: %v",
 				minPayment, validatorRewardShare, loan)
-			log.Printf("   🔧 Find the key hex for validator key expiring at %v", expirationTime((nextRoundSince)))
-			log.Printf("   🔧 Delete the perm key in validator-console with command `delpermkey`")
 		}
 	}
 	if participation.State != ParticipationOpen {
@@ -522,7 +520,7 @@ func loadBalance(w *wallet.Wallet, mainchainInfo *ton.BlockIDExt) *big.Int {
 }
 
 func createValidationKey(engine *Engine, nextRoundSince uint32, adnlAddress string) (string, []byte) {
-	expireAt := expirationTime(nextRoundSince)
+	expireAt := uint32(time.Now().Unix()) + 300
 
 	keyHash := engine.NewKey()
 
@@ -535,10 +533,6 @@ func createValidationKey(engine *Engine, nextRoundSince uint32, adnlAddress stri
 	publicKey := engine.ExportPub(keyHash)
 
 	return keyHash, publicKey
-}
-
-func expirationTime(nextRoundSince uint32) uint32 {
-	return nextRoundSince + 300
 }
 
 func sendRequestLoan(w *wallet.Wallet, message *wallet.Message) {
