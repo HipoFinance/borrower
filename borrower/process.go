@@ -47,17 +47,6 @@ func Process() (wait time.Duration) {
 		participationsList = participations.All()
 	}
 
-	if len(participationsList) == 0 {
-		t := participateSince + 60
-		if uint32(time.Now().Unix()) > t {
-			t = nextRoundSince
-		}
-		next := time.Until(time.Unix(int64(t), 0))
-		if wait == 0 || wait > next {
-			wait = next
-		}
-	}
-
 	for _, kv := range participationsList {
 		roundSince := uint32(kv.Key.BeginParse().MustLoadUInt(32))
 		participation := LoadParticipation(kv.Value)
@@ -183,6 +172,15 @@ func Process() (wait time.Duration) {
 				}
 			}
 		}
+	}
+
+	t := participateSince + 60
+	if uint32(time.Now().Unix()) > t {
+		t = nextRoundSince
+	}
+	next := time.Until(time.Unix(int64(t), 0))
+	if wait == 0 || wait > next {
+		wait = next
 	}
 
 	return
