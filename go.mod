@@ -3,7 +3,7 @@ module borrower
 go 1.21
 
 require (
-	github.com/xssnick/tonutils-go v1.8.7
+	github.com/xssnick/tonutils-go v1.8.8
 	gopkg.in/yaml.v3 v3.0.1
 )
 
