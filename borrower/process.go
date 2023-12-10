@@ -520,15 +520,19 @@ func loadBalance(w *wallet.Wallet, mainchainInfo *ton.BlockIDExt) *big.Int {
 }
 
 func createValidationKey(engine *Engine, nextRoundSince uint32, adnlAddress string) (string, []byte) {
-	expireAt := uint32(time.Now().Unix()) + 300
+	keyHash := engine.FindPermKeyIfExists(nextRoundSince)
 
-	keyHash := engine.NewKey()
+	if keyHash == "" {
+		expireAt := nextRoundSince + 300
 
-	engine.AddPermKey(keyHash, nextRoundSince, expireAt)
+		keyHash = engine.NewKey()
 
-	engine.AddTempKey(keyHash, expireAt)
+		engine.AddPermKey(keyHash, nextRoundSince, expireAt)
 
-	engine.AddValidatorAddr(keyHash, adnlAddress, expireAt)
+		engine.AddTempKey(keyHash, expireAt)
+
+		engine.AddValidatorAddr(keyHash, adnlAddress, expireAt)
+	}
 
 	publicKey := engine.ExportPub(keyHash)
 

@@ -3,6 +3,8 @@ package borrower
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -14,6 +16,15 @@ import (
 
 type Engine struct {
 	config ValidatorEngine
+}
+
+type EngineConfig struct {
+	Validators []ValidatorConfig `json:"validators"`
+}
+
+type ValidatorConfig struct {
+	Id           string `json:"id"`
+	ElectionDate uint32 `json:"election_date"`
 }
 
 func NewValidatorEngine(config ValidatorEngine) *Engine {
@@ -46,6 +57,32 @@ func (e *Engine) IsSync() bool {
 		panic(fmt.Sprintf("Error in validator-console getstats: %s", out))
 	}
 	return unixTime-masterchainBlockTime < 60
+}
+
+func (e *Engine) FindPermKeyIfExists(roundSince uint32) (idHex string) {
+	out, err := e.createCommand("getconfig")
+	if err != nil {
+		panic(fmt.Sprintf("error in validator-console getconfig: %v", err))
+	}
+	lines := strings.Split(strings.Trim(string(out), " \n\t"), "\n")
+	lines = lines[5 : len(lines)-1]
+	jsonString := strings.Join(lines, "\n")
+	config := EngineConfig{}
+	err = json.Unmarshal([]byte(jsonString), &config)
+	if err != nil {
+		panic(fmt.Sprintf("error in validator-console unmarshal of config: %v", err))
+	}
+	for _, vc := range config.Validators {
+		if vc.ElectionDate == roundSince {
+			bytes, err := base64.StdEncoding.DecodeString(vc.Id)
+			if err != nil {
+				panic(fmt.Sprintf("error in validator-console decode base64: %v", err))
+			}
+			idHex = hex.EncodeToString(bytes)
+			return
+		}
+	}
+	return
 }
 
 func (e *Engine) NewKey() string {
