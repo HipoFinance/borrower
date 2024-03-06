@@ -10,19 +10,20 @@ type ParticipationState uint8
 
 const (
 	ParticipationOpen ParticipationState = iota
-	ParticipationDistribution
+	ParticipationDistributing
 	ParticipationStaked
 	ParticipationValidating
 	ParticipationHeld
 	ParticipationRecovering
+	ParticipationBurning
 )
 
 func (s ParticipationState) String() string {
 	switch s {
 	case ParticipationOpen:
 		return "open"
-	case ParticipationDistribution:
-		return "distribution"
+	case ParticipationDistributing:
+		return "distributing"
 	case ParticipationStaked:
 		return "staked"
 	case ParticipationValidating:
@@ -31,6 +32,8 @@ func (s ParticipationState) String() string {
 		return "held"
 	case ParticipationRecovering:
 		return "recovering"
+	case ParticipationBurning:
+		return "burning"
 	}
 	return "unknown"
 }
@@ -55,7 +58,7 @@ type Participation struct {
 func LoadParticipation(c *cell.Cell) Participation {
 	s := c.BeginParse()
 	return Participation{
-		State:           ParticipationState(s.MustLoadUInt(3)),
+		State:           ParticipationState(s.MustLoadUInt(4)),
 		Size:            uint16(s.MustLoadUInt(16)),
 		Sorted:          s.MustLoadDict(112),
 		Requests:        s.MustLoadDict(256),

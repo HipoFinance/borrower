@@ -64,11 +64,11 @@ func (t *Tonlib) GetMaxPunishment(treasury address.Address, stake *big.Int) *big
 }
 
 func (t *Tonlib) GetRequestLoanFee(treasury address.Address) *big.Int {
-	out, err := t.createCommand(fmt.Sprintf("runmethod %s get_fees", treasury.String()))
+	out, err := t.createCommand(fmt.Sprintf("runmethod %s get_treasury_fees 0", treasury.String()))
 	if err != nil {
-		panic(fmt.Sprintf("Error in tonlib runmethod for get_fees: %v", err))
+		panic(fmt.Sprintf("Error in tonlib runmethod for get_treasury_fees: %v", err))
 	}
-	requestLoanFeeString := getTonlibResult(out, 7, 3)
+	requestLoanFeeString := getTonlibResult(out, 3, 0)
 	requestLoanFee, parsed := new(big.Int).SetString(requestLoanFeeString, 10)
 	if !parsed {
 		panic(fmt.Sprintf("Unexpected request_loan_fee nanoTON string: %s", out))

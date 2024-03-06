@@ -87,7 +87,7 @@ func Process() (wait time.Duration) {
 				}
 			}
 
-		} else if participation.State == ParticipationDistribution {
+		} else if participation.State == ParticipationDistributing {
 			next := 30 * time.Second
 			if wait == 0 || wait > next {
 				wait = next
@@ -302,7 +302,7 @@ func RequestLoan() (wait time.Duration) {
 		EndCell()
 
 	payload := cell.BeginCell().
-		MustStoreUInt(0x12b808d3, 32).
+		MustStoreUInt(0x36335da9, 32).
 		MustStoreUInt(uint64(time.Now().Unix()), 64).
 		MustStoreUInt(uint64(nextRoundSince), 32).
 		MustStoreBigCoins(loan).
@@ -400,14 +400,14 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 	}
 
 	var participations *cell.Dictionary
-	if !treasuryState.MustIsNil(7) {
-		participations, err = treasuryState.MustCell(7).BeginParse().ToDict(32)
+	if !treasuryState.MustIsNil(6) {
+		participations, err = treasuryState.MustCell(6).BeginParse().ToDict(32)
 	}
 	if err != nil {
 		panic(fmt.Sprintf("Error in loading participations dictionary: %v", err))
 	}
 
-	stopped := treasuryState.MustInt(9).Cmp(big.NewInt(0)) != 0
+	stopped := treasuryState.MustInt(8).Cmp(big.NewInt(0)) != 0
 
 	return participations, stopped
 }
