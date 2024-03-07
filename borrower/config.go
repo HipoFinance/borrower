@@ -16,7 +16,6 @@ type Config struct {
 	Borrow          Borrow
 	Wallet          Wallet
 	ValidatorEngine ValidatorEngine `yaml:"validator_engine"`
-	TonlibCli       TonlibCli       `yaml:"tonlib_cli"`
 }
 
 type Borrow struct {
@@ -43,10 +42,6 @@ type ValidatorEngine struct {
 	ControlPort    uint16 `yaml:"control_port"`
 	LiteserverPort uint16 `yaml:"liteserver_port"`
 	AdnlAddress    string `yaml:"adnl_address"`
-}
-
-type TonlibCli struct {
-	Executable string
 }
 
 func ReadConfig() (config *Config, err error) {

@@ -85,8 +85,6 @@ Rent a server that has the [minimum hardware requirements](https://docs.ton.org/
 
     - `validator_engine`: Configure your validator here, specifically enter your ADNL address from the `status` command of `mytonctrl`.
 
-    - `tonlib_cli`: Configure `tonlib-cli` here. You may need to build it from the source using `cd /usr/bin/ton && cmake --build . --target tonlib-cli`. You may need to stop `validator.service` before compilation.
-
 4. Install the service file. Copy `borrower.service` to `/etc/systemd/system` and edit it according to your configuration. Then run these one by one:
 
     ```sh

@@ -30,8 +30,6 @@ func Process() (wait time.Duration) {
 
 	api, ctx := loadApi(config)
 
-	tonlib := NewTonlib(config.TonlibCli.Executable, config.GlobalConfig)
-
 	treasuryAddress := address.MustParseAddr(config.Treasury)
 
 	mainchainInfo := loadMainchainInfo(api, ctx)
@@ -40,7 +38,7 @@ func Process() (wait time.Duration) {
 
 	participations, _ := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
-	participateSince := tonlib.GetParticipateSince(*treasuryAddress)
+	participateSince := getParticipateSince(api, ctx, mainchainInfo, treasuryAddress)
 
 	participationsList := []*cell.HashmapKV{}
 	if participations != nil {
@@ -198,8 +196,6 @@ func RequestLoan() (wait time.Duration) {
 
 	api, ctx := loadApi(config)
 
-	tonlib := NewTonlib(config.TonlibCli.Executable, config.GlobalConfig)
-
 	engine := NewValidatorEngine(config.ValidatorEngine)
 
 	treasuryAddress := address.MustParseAddr(config.Treasury)
@@ -233,9 +229,9 @@ func RequestLoan() (wait time.Duration) {
 
 	stake, loan, minPayment, maxFactor, validatorRewardShare := loadBorrowConfig(config.Borrow, minStake)
 
-	maxPunishment := tonlib.GetMaxPunishment(*treasuryAddress, loan)
+	maxPunishment := getMaxPunishment(api, ctx, mainchainInfo, treasuryAddress, loan)
 
-	requestLoanFee := tonlib.GetRequestLoanFee(*treasuryAddress)
+	requestLoanFee := getRequestLoanFee(api, ctx, mainchainInfo, treasuryAddress)
 
 	if stopped {
 		log.Printf("   🔲 Treasury is stopped")
@@ -410,6 +406,72 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 	stopped := treasuryState.MustInt(8).Cmp(big.NewInt(0)) != 0
 
 	return participations, stopped
+}
+
+func getParticipateSince(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
+	treasuryAddress *address.Address) uint32 {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	treasuryAccount, err := api.GetAccount(ctx, mainchainInfo, treasuryAddress)
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting treasury account: %v", err))
+	}
+
+	if !treasuryAccount.IsActive {
+		panic("Error, treasury account is not active")
+	}
+
+	times, err := api.RunGetMethod(ctx, mainchainInfo, treasuryAddress, "get_times")
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting times: %v", err))
+	}
+
+	return uint32(times.MustInt(1).Int64())
+}
+
+func getMaxPunishment(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
+	treasuryAddress *address.Address, loan *big.Int) *big.Int {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	treasuryAccount, err := api.GetAccount(ctx, mainchainInfo, treasuryAddress)
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting treasury account: %v", err))
+	}
+
+	if !treasuryAccount.IsActive {
+		panic("Error, treasury account is not active")
+	}
+
+	maxPunishment, err := api.RunGetMethod(ctx, mainchainInfo, treasuryAddress, "get_max_punishment", loan)
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting max punishment: %v", err))
+	}
+
+	return maxPunishment.MustInt(0)
+}
+
+func getRequestLoanFee(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
+	treasuryAddress *address.Address) *big.Int {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	treasuryAccount, err := api.GetAccount(ctx, mainchainInfo, treasuryAddress)
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting treasury account: %v", err))
+	}
+
+	if !treasuryAccount.IsActive {
+		panic("Error, treasury account is not active")
+	}
+
+	treasuryFees, err := api.RunGetMethod(ctx, mainchainInfo, treasuryAddress, "get_treasury_fees", 0)
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting treasury fees: %v", err))
+	}
+
+	return treasuryFees.MustInt(0)
 }
 
 func loadAdnlAddress(adnlAddress string) *big.Int {

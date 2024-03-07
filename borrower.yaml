@@ -57,8 +57,3 @@ validator_engine:
 
     # Find the hex encoded ADNL address of your validator in `mytonctrl` using the `status` command.
     adnl_address:
-
-# Configure tonlib-cli
-tonlib_cli:
-    # The path to the tonlib-cli executable.
-    executable: /usr/bin/ton/tonlib/tonlib-cli
