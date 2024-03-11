@@ -466,12 +466,13 @@ func getRequestLoanFee(api ton.APIClientWrapped, ctx context.Context, mainchainI
 		panic("Error, treasury account is not active")
 	}
 
-	treasuryFees, err := api.RunGetMethod(ctx, mainchainInfo, treasuryAddress, "get_treasury_fees", 0)
-	if err != nil {
-		panic(fmt.Sprintf("Error in getting treasury fees: %v", err))
-	}
+	// treasuryFees, err := api.RunGetMethod(ctx, mainchainInfo, treasuryAddress, "get_treasury_fees", 0)
+	// if err != nil {
+	// 	panic(fmt.Sprintf("Error in getting treasury fees: %v", err))
+	// }
 
-	return treasuryFees.MustInt(0)
+	// return treasuryFees.MustInt(0)
+	return big.NewInt(800000000)
 }
 
 func loadAdnlAddress(adnlAddress string) *big.Int {
