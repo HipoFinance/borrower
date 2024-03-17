@@ -472,7 +472,7 @@ func getRequestLoanFee(api ton.APIClientWrapped, ctx context.Context, mainchainI
 	// }
 
 	// return treasuryFees.MustInt(0)
-	return big.NewInt(800000000)
+	return big.NewInt(1000000000)
 }
 
 func loadAdnlAddress(adnlAddress string) *big.Int {
