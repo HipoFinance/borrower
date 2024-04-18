@@ -204,7 +204,7 @@ func RequestLoan() (wait time.Duration) {
 
 	mainchainInfo := loadMainchainInfo(api, ctx)
 
-	_, minStake, _, nextRoundSince, stakeHeldFor := loadBlockchainConfig(api, ctx, mainchainInfo)
+	validatorsElectedFor, minStake, _, nextRoundSince, stakeHeldFor := loadBlockchainConfig(api, ctx, mainchainInfo)
 
 	participations, stopped := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
@@ -274,7 +274,8 @@ func RequestLoan() (wait time.Duration) {
 
 	log.Printf("   🛠  Configuring validator engine for round %v", formattedNextRoundSince)
 
-	keyHash, publicKey := createValidationKey(engine, nextRoundSince, config.ValidatorEngine.AdnlAddress)
+	keyHash, publicKey :=
+		createValidationKey(engine, nextRoundSince, validatorsElectedFor, config.ValidatorEngine.AdnlAddress)
 
 	log.Printf("   💎 Requesting a loan of %v TON, sending %v TON, for validation round %v",
 		tlb.FromNanoTON(loan).String(), tlb.FromNanoTON(value), formattedNextRoundSince)
@@ -582,11 +583,12 @@ func loadBalance(w *wallet.Wallet, mainchainInfo *ton.BlockIDExt) *big.Int {
 	return balance.Nano()
 }
 
-func createValidationKey(engine *Engine, nextRoundSince uint32, adnlAddress string) (string, []byte) {
+func createValidationKey(engine *Engine, nextRoundSince, validatorsElectedFor uint32,
+	adnlAddress string) (string, []byte) {
 	keyHash := engine.FindPermKeyIfExists(nextRoundSince)
 
 	if keyHash == "" {
-		expireAt := nextRoundSince + 300
+		expireAt := nextRoundSince + validatorsElectedFor
 
 		keyHash = engine.NewKey()
 
