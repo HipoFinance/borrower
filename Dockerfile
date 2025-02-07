@@ -18,4 +18,6 @@ RUN apt update && apt install -y ca-certificates curl bash htop tini procps sed 
 RUN touch /var/run/supervisor.sock && chmod 777 /var/run/supervisor.sock
 COPY --from=builder /usr/local/bin/borrower /usr/local/bin/borrower
 
-ENTRYPOINT ["/usr/bin/tini", "-s", "--", "borrower"]
+COPY ./supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+ENTRYPOINT ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
