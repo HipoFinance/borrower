@@ -24,7 +24,8 @@ type Borrow struct {
 	Loan                 string
 	MinPayment           string  `yaml:"min_payment"`
 	MaxFactorRatio       float32 `yaml:"max_factor_ratio"`
-	ValidatorRewardShare uint8   `yaml:"validator_reward_share"`
+	ValidatorRewardShare uint16  `yaml:"validator_reward_share"`
+	MevRewardShare 		 uint16  `yaml:"mev_reward_share"`
 }
 
 type Wallet struct {

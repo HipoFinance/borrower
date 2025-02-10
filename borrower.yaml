@@ -23,7 +23,9 @@ borrow:
 
     # The ratio to divide the reward of validation between treasury and you.
     # It will be divided by 255, so for example 102 means 40%.
-    validator_reward_share: 102 # 0-255
+    validator_reward_share: 102 # 0-10000
+
+    mev_reward_share: 153 # 0-10000
 
 # Configure the wallet used to pay for loan requests.
 wallet:

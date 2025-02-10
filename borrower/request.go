@@ -8,7 +8,7 @@ import (
 
 type Request struct {
 	MinPayment           *big.Int
-	ValidatorRewardShare uint8
+	ValidatorRewardShare uint16
 	LoanAmount           *big.Int
 	AccrueAmount         *big.Int
 	StakeAmount          *big.Int
@@ -19,7 +19,7 @@ func LoadRequest(c *cell.Cell) Request {
 	s := c.BeginParse()
 	return Request{
 		MinPayment:           s.MustLoadBigCoins(),
-		ValidatorRewardShare: uint8(s.MustLoadUInt(8)),
+		ValidatorRewardShare: uint16(s.MustLoadUInt(14)),
 		LoanAmount:           s.MustLoadBigCoins(),
 		AccrueAmount:         s.MustLoadBigCoins(),
 		StakeAmount:          s.MustLoadBigCoins(),

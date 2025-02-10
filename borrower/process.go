@@ -227,7 +227,7 @@ func RequestLoan() (wait time.Duration) {
 
 	loanAddress := loadLoanAddress(validatorAddress, treasuryAddress, nextRoundSince, api, ctx, mainchainInfo)
 
-	stake, loan, minPayment, maxFactor, validatorRewardShare := loadBorrowConfig(config.Borrow, minStake)
+	stake, loan, minPayment, maxFactor, validatorRewardShare, mevRewardShare := loadBorrowConfig(config.Borrow, minStake)
 
 	maxPunishment := getMaxPunishment(api, ctx, mainchainInfo, treasuryAddress, loan)
 
@@ -304,7 +304,8 @@ func RequestLoan() (wait time.Duration) {
 		MustStoreUInt(uint64(nextRoundSince), 32).
 		MustStoreBigCoins(loan).
 		MustStoreBigCoins(minPayment).
-		MustStoreUInt(uint64(validatorRewardShare), 8).
+		MustStoreUInt(uint64(validatorRewardShare), 14).
+		MustStoreUInt(uint64(mevRewardShare), 14).
 		MustStoreRef(newStakeMsg).
 		EndCell()
 
@@ -544,7 +545,7 @@ func loadParticipation(participations *cell.Dictionary, nextRoundSince uint32) *
 	return &participation
 }
 
-func loadBorrowConfig(config Borrow, minStake *big.Int) (*big.Int, *big.Int, *big.Int, uint32, uint8) {
+func loadBorrowConfig(config Borrow, minStake *big.Int) (*big.Int, *big.Int, *big.Int, uint32, uint16, uint16) {
 	stake, err := tlb.FromTON(config.Stake)
 	if err != nil {
 		panic("Error, invalid stake amount")
@@ -568,7 +569,17 @@ func loadBorrowConfig(config Borrow, minStake *big.Int) (*big.Int, *big.Int, *bi
 	}
 	maxFactor := uint32(config.MaxFactorRatio * 65536)
 
-	return stake.Nano(), loan.Nano(), minPayment.Nano(), maxFactor, config.ValidatorRewardShare
+	// validate config.MevRewardShare must be 0-10000
+	if config.MevRewardShare > 10000 {
+		panic("Error, mev_reward_share must be <= 10000")
+	}
+
+	// validate config.ValidatorRewardShare must be 0-10000
+	if config.ValidatorRewardShare > 10000 {
+		panic("Error, validator_reward_share must be <= 10000")
+	}
+
+	return stake.Nano(), loan.Nano(), minPayment.Nano(), maxFactor, config.ValidatorRewardShare, config.MevRewardShare
 }
 
 func loadBalance(w *wallet.Wallet, mainchainInfo *ton.BlockIDExt) *big.Int {
