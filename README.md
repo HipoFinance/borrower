@@ -1,26 +1,26 @@
 # Borrower
 
-Borrower is a utility for TON blockchain validators to request loans from hTON: Hipo liquid staking protocol.
+Borrower is a utility for TON blockchain validators to request loans from hGRAM: Hipo liquid staking protocol.
 
-If you're a node operator, but you don't have enough TON to stake, you're at the right place. With Borrower you can request a loan from [hTON](https://github.com/HipoFinance/contract), validate blocks, and earn a reward for your service.
+If you're a node operator, but you don't have enough GRAM to stake, you're at the right place. With Borrower you can request a loan from [hGRAM](https://github.com/HipoFinance/contract), validate blocks, and earn a reward for your service.
 
-Before moving forward, first read the documentation of [hTON contract](https://github.com/HipoFinance/contract).
+Before moving forward, first read the documentation of [hGRAM contract](https://github.com/HipoFinance/contract).
 
 ## Validating Blocks
 
 TON blockchain is a Proof-of-Stake (PoS) blockchain. That means that in order to create new blocks, you don't have to buy expensive hardware and pay a lot of money for electricity to produce lots of hashes, like Bitcoin miners. Instead, you have to stake your money for a fixed period of time and use a generally available server to participate in block creation.
 
-PoS blockchains reward their validators for their service, and in TON, every new block that is created will generate some Toncoin that will be distributed between validators. In addition, transaction fees paid by blockchain users will be distributed between validators.
+PoS blockchains reward their validators for their service, and in TON, every new block that is created will generate some GRAM that will be distributed between validators. In addition, transaction fees paid by blockchain users will be distributed between validators.
 
-Now, to start validating, you need access to a large sum of Toncoin, like 300,000 TON or more. If you don't have access to that, you're at the right place. Borrower helps you in requesting a loan from hTON treasury. hTON treasury is the place where other users put their Toncoin to help validators like you, and in return they want a portion of the rewards. We refer to these users as stakers.
+Now, to start validating, you need access to a large sum of GRAM, like 300,000 GRAM or more. If you don't have access to that, you're at the right place. Borrower helps you in requesting a loan from hGRAM treasury. hGRAM treasury is the place where other users put their GRAM to help validators like you, and in return they want a portion of the rewards. We refer to these users as stakers.
 
 If your loan request is accepted, you'll be given at least the requested amount, so that you can use it to participate in elections for the next round, and assuming you win in the election, your node will start to validate blocks for a fixed period of time, like 18 hours.
 
-To prevent validators from doing nasty things to the blockchain, after a round of validation, there is a period of time (like 9 hours) that validators may be punished. This process is done by other validators, and they might propose to punish a rogue validator. So, in order to validate, you have to bring the maximum possible punishment for your requested loan when asking for it. This way, hTON won't have to pay the punishment from stakers' pocket. At the time of writing, the maximum punishment is 101 TON.
+To prevent validators from doing nasty things to the blockchain, after a round of validation, there is a period of time (like 9 hours) that validators may be punished. This process is done by other validators, and they might propose to punish a rogue validator. So, in order to validate, you have to bring the maximum possible punishment for your requested loan when asking for it. This way, hGRAM won't have to pay the punishment from stakers' pocket. At the time of writing, the maximum punishment is 101 GRAM.
 
 ### Competition Between Validators
 
-Since hTON is a permission-less smart-contract, anyone can request a loan from it, and to manage the limited resources of the protocol, loans will be given to validators with best return on investment (RoI).
+Since hGRAM is a permission-less smart-contract, anyone can request a loan from it, and to manage the limited resources of the protocol, loans will be given to validators with best return on investment (RoI).
 
 When requesting a loan, there are a few parameters sent alongside your request, which can determine the winners:
 
@@ -30,7 +30,7 @@ When requesting a loan, there are a few parameters sent alongside your request, 
 
 - **Minimum Payment**: To prevent attacks to the protocol, and to make the competition more fair, validators can set a minimum payment. This amount will be deducted from their returned reward in case their loan is accepted. So, validators can calculate the returned rewards for the round they're participating in, find out how much they'll earn, and set a reasonable amount here to have more opportunity to win.
 
-- Stake Amount: In addition, validators can bring their own Toncoin to the table if they have a substantial amount. This amount will be added to their loan. For example, if you have 100,000 TON, you can then ask for just 200,000 TON and bring your own Toncoin to reach the minimum of 300,000 TON.
+- Stake Amount: In addition, validators can bring their own GRAM to the table if they have a substantial amount. This amount will be added to their loan. For example, if you have 100,000 GRAM, you can then ask for just 200,000 GRAM and bring your own GRAM to reach the minimum of 300,000 GRAM.
 
 When the protocol is deciding on loans, requests are sorted.
 
@@ -38,7 +38,7 @@ When the protocol is deciding on loans, requests are sorted.
 
     > RoI = Minimum Payment / Loan Amount
 
-    So, those with more payment and less loan amount have a higher chance to win. To prevent validators from cheap competition, these amounts are rounded. Minimum payment is rounded to around 1 TON and loan amount is rounded to around 1100 TON.
+    So, those with more payment and less loan amount have a higher chance to win. To prevent validators from cheap competition, these amounts are rounded. Minimum payment is rounded to around 1 GRAM and loan amount is rounded to around 1100 GRAM.
 
 2. The second criteria is the validator reward share. Here, the validators who take less share of the reward, will have more opportunity.
 
@@ -81,7 +81,7 @@ Rent a server that has the [minimum hardware requirements](https://docs.ton.org/
 
     - `borrow`: Configuration related to each loan request.
 
-    - `wallet`: Your wallet configuration that is used to send loan requests and the needed TON amount.
+    - `wallet`: Your wallet configuration that is used to send loan requests and the needed GRAM amount.
 
     - `validator_engine`: Configure your validator here, specifically enter your ADNL address from the `status` command of `mytonctrl`.
 
