@@ -36,7 +36,7 @@ wallet:
     path: wallet.secret
 
     # The version of wallet smart-contract.
-    version: v4r2 # v4r2 | v3r2
+    version: v5r1final # v5r1final | v4r2 | v3r2
 
 # Configure your validator engine here.
 validator_engine:

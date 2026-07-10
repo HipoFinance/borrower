@@ -59,7 +59,8 @@ func Process() (wait time.Duration) {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
-		if participation.State == ParticipationOpen {
+		switch participation.State {
+		case ParticipationOpen:
 			if now < roundParticipateTime {
 				next := time.Until(time.Unix(int64(roundParticipateTime), 0))
 				if wait == 0 || wait > next {
@@ -85,13 +86,13 @@ func Process() (wait time.Duration) {
 				}
 			}
 
-		} else if participation.State == ParticipationDistributing {
+		case ParticipationDistributing:
 			next := 30 * time.Second
 			if wait == 0 || wait > next {
 				wait = next
 			}
 
-		} else if participation.State == ParticipationStaked {
+		case ParticipationStaked:
 			if !vsetChanged {
 				next := time.Until(time.Unix(int64(nextRoundSince), 0))
 				if wait == 0 || wait > next {
@@ -117,7 +118,7 @@ func Process() (wait time.Duration) {
 				}
 			}
 
-		} else if participation.State == ParticipationValidating {
+		case ParticipationValidating:
 			if !vsetChanged {
 				next := time.Until(time.Unix(int64(roundSince+validatorsElectedFor), 0))
 				if wait == 0 || wait > next {
@@ -143,7 +144,7 @@ func Process() (wait time.Duration) {
 				}
 			}
 
-		} else if participation.State == ParticipationHeld {
+		case ParticipationHeld:
 			if now < participation.StakeHeldUntil {
 				next := time.Until(time.Unix(int64(participation.StakeHeldUntil), 0))
 				if wait == 0 || wait > next {
@@ -487,13 +488,16 @@ func loadAdnlAddress(adnlAddress string) *big.Int {
 }
 
 func loadWallet(config Wallet, api ton.APIClientWrapped) *wallet.Wallet {
-	var version wallet.Version
-	if config.Version == "v4r2" {
+	var version wallet.VersionConfig
+	switch config.Version {
+	case "v5r1final":
+		version = wallet.ConfigV5R1Final{NetworkGlobalID: wallet.MainnetGlobalID}
+	case "v4r2":
 		version = wallet.V4R2
-	} else if config.Version == "v3r2" {
+	case "v3r2":
 		version = wallet.V3R2
-	} else {
-		panic(fmt.Sprintf("Error, invalid wallet version, expected v4r2 or v3r2 but got: %v", config.Version))
+	default:
+		panic(fmt.Sprintf("Error, invalid wallet version, expected v5r1final, v4r2, or v3r2 but got: %v", config.Version))
 	}
 
 	secret, err := os.ReadFile(config.Path)
@@ -502,12 +506,13 @@ func loadWallet(config Wallet, api ton.APIClientWrapped) *wallet.Wallet {
 	}
 
 	var w *wallet.Wallet
-	if config.Type == "mnemonic" {
+	switch config.Type {
+	case "mnemonic":
 		seed := strings.Split(strings.Trim(string(secret), " \n\t"), " ")
 		w, err = wallet.FromSeed(api, seed, version)
-	} else if config.Type == "binary" {
+	case "binary":
 		w, err = wallet.FromPrivateKey(api, secret, version)
-	} else {
+	default:
 		panic(fmt.Sprintf("Error, invalid wallet type, expected mnemonic or binary but got: %v", config.Type))
 	}
 	if err != nil {
