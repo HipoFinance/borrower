@@ -15,6 +15,9 @@ const (
 	ParticipationValidating
 	ParticipationHeld
 	ParticipationRecovering
+	// ParticipationReadyToBurn is a round that has settled and booked its reward but still holds its
+	// bills while an older round can still book a reward.
+	ParticipationReadyToBurn
 	ParticipationBurning
 )
 
@@ -32,6 +35,8 @@ func (s ParticipationState) String() string {
 		return "held"
 	case ParticipationRecovering:
 		return "recovering"
+	case ParticipationReadyToBurn:
+		return "ready_to_burn"
 	case ParticipationBurning:
 		return "burning"
 	}
