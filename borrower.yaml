@@ -1,5 +1,5 @@
 # Friendly address of hTON treasury.
-treasury: EQBNo5qAG8I8J6IxGaz15SfQVB-kX98YhKV_mT36Xo5vYxUa
+treasury: EQCLyZHP4Xe8fpchQz76O-_RmUhaVc_9BAoGyJrwJrcbz2eZ
 
 # The path to the ton global config.
 global_config: /usr/bin/ton/global.config.json
