@@ -42,7 +42,9 @@ When the protocol is deciding on loans, requests are sorted.
 
 2. The second criteria is the validator reward share. Here, the validators who take less share of the reward, will have more opportunity.
 
-    Because this value can be specified in the range of 0-255, each step is around 0.4%. So, validators can only compete in this criteria by 0.4% steps.
+    This value is specified in the range of 0-65535, so each step is around 0.0015% of the round's reward. It used to be 0-255, where a step was around 0.4% of the reward — but the step that matters is measured against your own take, not the whole reward, and at the shares validators actually bid a single step moved that take by more than 12%. At the bottom of the old range the only move left was to zero. The wider range is what lets validators genuinely compete here.
+
+    An old configuration is not converted for you: multiply your old value by 257 and rename the key to `reward_share`. 8 becomes 2056, 102 becomes 26214. The borrower refuses to start on the old key, because an old number is perfectly valid on the new scale and would quietly give away almost your whole share.
 
 3. The third criteria is the loan amount itself. Whoever asks for less loan has a better chance of winning.
 

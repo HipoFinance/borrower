@@ -36,7 +36,7 @@ func Process() (wait time.Duration) {
 
 	validatorsElectedFor, _, currentVsetHash, nextRoundSince, _ := loadBlockchainConfig(api, ctx, mainchainInfo)
 
-	participations, _ := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
+	participations, _, _ := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
 	participateSince := getParticipateSince(api, ctx, mainchainInfo, treasuryAddress)
 
@@ -207,7 +207,7 @@ func RequestLoan() (wait time.Duration) {
 
 	validatorsElectedFor, minStake, _, nextRoundSince, stakeHeldFor := loadBlockchainConfig(api, ctx, mainchainInfo)
 
-	participations, stopped := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
+	participations, stopped, borrowerFee := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
 	formattedNextRoundSince := time.Unix(int64(nextRoundSince), 0).Format(TimeFormat)
 
@@ -228,7 +228,7 @@ func RequestLoan() (wait time.Duration) {
 
 	loanAddress := loadLoanAddress(validatorAddress, treasuryAddress, nextRoundSince, api, ctx, mainchainInfo)
 
-	stake, loan, minPayment, maxFactor, validatorRewardShare := loadBorrowConfig(config.Borrow, minStake)
+	stake, loan, minPayment, maxFactor, rewardShare := loadBorrowConfig(config.Borrow, minStake)
 
 	maxPunishment := getMaxPunishment(api, ctx, mainchainInfo, treasuryAddress, loan)
 
@@ -244,13 +244,13 @@ func RequestLoan() (wait time.Duration) {
 		cell := participation.Requests.Get(validatorKey)
 		r := LoadRequest(cell)
 		if r.MinPayment.Cmp(minPayment) == 0 &&
-			r.ValidatorRewardShare == validatorRewardShare &&
+			r.RewardShare == rewardShare &&
 			r.LoanAmount.Cmp(loan) == 0 {
 			log.Printf("   ⏩ Already participated in round %v", formattedNextRoundSince)
 			return
 		} else {
-			log.Printf("   ✏️  Updating last request to min_payment: %v, validator_reward_share: %v, loan: %v",
-				minPayment, validatorRewardShare, loan)
+			log.Printf("   ✏️  Updating last request to min_payment: %v, reward_share: %v, loan: %v",
+				minPayment, rewardShare, loan)
 		}
 	}
 	if participation.State != ParticipationOpen {
@@ -265,6 +265,13 @@ func RequestLoan() (wait time.Duration) {
 	value = value.Add(value, requestLoanFee)
 	value = value.Add(value, minPayment)
 	value = value.Add(value, stake)
+	if borrowerFee != 0 {
+		// The treasury requires collateral to cover min_payment + fee::min_burn + max_punishment, so
+		// the floor has to be sent up front or the request is rejected outright. It is collateral, not
+		// a fee: whatever the burn does not take comes back with loan_result at recovery. The constant
+		// is 1 GRAM in contracts/imports/constants.fc and is not exposed by a getter.
+		value = value.Add(value, minBurn)
+	}
 
 	balance := loadBalance(w, mainchainInfo)
 	if balance.Cmp(value) != 1 {
@@ -305,7 +312,7 @@ func RequestLoan() (wait time.Duration) {
 		MustStoreUInt(uint64(nextRoundSince), 32).
 		MustStoreBigCoins(loan).
 		MustStoreBigCoins(minPayment).
-		MustStoreUInt(uint64(validatorRewardShare), 8).
+		MustStoreUInt(uint64(rewardShare), 16).
 		MustStoreRef(newStakeMsg).
 		EndCell()
 
@@ -378,7 +385,7 @@ func loadBlockchainConfig(api ton.APIClientWrapped, ctx context.Context, maincha
 }
 
 func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
-	treasuryAddress *address.Address) (*cell.Dictionary, bool) {
+	treasuryAddress *address.Address) (*cell.Dictionary, bool, uint16) {
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -407,7 +414,12 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 
 	stopped := treasuryState.MustInt(8).Cmp(big.NewInt(0)) != 0
 
-	return participations, stopped
+	// Index 17, right after governance_fee. Out of 65535 of a borrower's contractual share of the
+	// round reward, charged on top of what the pool takes and paid out of the borrower's own funds.
+	// Zero disables it entirely, floor included.
+	borrowerFee := uint16(treasuryState.MustInt(17).Uint64())
+
+	return participations, stopped, borrowerFee
 }
 
 func getParticipateSince(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
@@ -549,7 +561,7 @@ func loadParticipation(participations *cell.Dictionary, nextRoundSince uint32) *
 	return &participation
 }
 
-func loadBorrowConfig(config Borrow, minStake *big.Int) (*big.Int, *big.Int, *big.Int, uint32, uint8) {
+func loadBorrowConfig(config Borrow, minStake *big.Int) (*big.Int, *big.Int, *big.Int, uint32, uint16) {
 	stake, err := tlb.FromTON(config.Stake)
 	if err != nil {
 		panic("Error, invalid stake amount")
@@ -573,7 +585,7 @@ func loadBorrowConfig(config Borrow, minStake *big.Int) (*big.Int, *big.Int, *bi
 	}
 	maxFactor := uint32(config.MaxFactorRatio * 65536)
 
-	return stake.Nano(), loan.Nano(), minPayment.Nano(), maxFactor, config.ValidatorRewardShare
+	return stake.Nano(), loan.Nano(), minPayment.Nano(), maxFactor, config.RewardShare
 }
 
 func loadBalance(w *wallet.Wallet, mainchainInfo *ton.BlockIDExt) *big.Int {

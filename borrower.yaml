@@ -22,8 +22,12 @@ borrow:
     max_factor_ratio: 3.0 # >= 1.0
 
     # The ratio to divide the reward of validation between treasury and you.
-    # It will be divided by 255, so for example 102 means 40%.
-    validator_reward_share: 102 # 0-255
+    # It will be divided by 65535, so for example 26214 means 40%.
+    #
+    # This replaces validator_reward_share, which was out of 255. Multiply an old value by 257:
+    # 8 becomes 2056, 102 becomes 26214. The borrower refuses to start on the old key rather than
+    # reading the old number on the new scale, which would give away almost your whole share.
+    reward_share: 26214 # 0-65535
 
 # Configure the wallet used to pay for loan requests.
 wallet:
