@@ -404,20 +404,35 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 		panic(fmt.Sprintf("Error in getting treasury state: %v", err))
 	}
 
+	// get_treasury_state mirrors the treasury's storage order, and fields get inserted into it
+	// rather than appended, so these indices move whenever the layout does. The 24 values are:
+	//
+	//    0 total_coins             6 parent            12 previous_rate       18 proposed_governor
+	//    1 total_tokens            7 participations    13 current_rate        19 governance_fee
+	//    2 total_staking           8 rounds_imbalance  14 round_duration      20 borrower_fee
+	//    3 total_unstaking         9 stopped?          15 last_settled_round  21 collection_codes
+	//    4 total_borrowers_stake  10 instant_mint?     16 halter              22 bill_codes
+	//    5 deficit                11 loan_codes        17 governor            23 old_parents
+	//
+	// A shift shows up as tonutils-go's "incorrect result type" on the first read below, because
+	// the value landing at index 7 stops being a cell. That is the loud failure the contract's
+	// getter comment promises, and it stops this process before it requests a loan or sends a
+	// finish_participation, so both go silent at once. Check the tuple against
+	// contract/contracts/treasury.fc's get_treasury_state before assuming the node is at fault.
 	var participations *cell.Dictionary
-	if !treasuryState.MustIsNil(6) {
-		participations, err = treasuryState.MustCell(6).BeginParse().ToDict(32)
+	if !treasuryState.MustIsNil(7) {
+		participations, err = treasuryState.MustCell(7).BeginParse().ToDict(32)
 	}
 	if err != nil {
 		panic(fmt.Sprintf("Error in loading participations dictionary: %v", err))
 	}
 
-	stopped := treasuryState.MustInt(8).Cmp(big.NewInt(0)) != 0
+	stopped := treasuryState.MustInt(9).Cmp(big.NewInt(0)) != 0
 
-	// Index 17, right after governance_fee. Out of 65535 of a borrower's contractual share of the
+	// Index 20, right after governance_fee. Out of 65535 of a borrower's contractual share of the
 	// round reward, charged on top of what the pool takes and paid out of the borrower's own funds.
 	// Zero disables it entirely, floor included.
-	borrowerFee := uint16(treasuryState.MustInt(17).Uint64())
+	borrowerFee := uint16(treasuryState.MustInt(20).Uint64())
 
 	return participations, stopped, borrowerFee
 }
