@@ -34,7 +34,7 @@ func Process() (wait time.Duration) {
 
 	mainchainInfo := loadMainchainInfo(api, ctx)
 
-	validatorsElectedFor, _, currentVsetHash, nextRoundSince, _ := loadBlockchainConfig(api, ctx, mainchainInfo)
+	validatorsElectedFor, _, _, currentVsetHash, nextRoundSince, _ := loadBlockchainConfig(api, ctx, mainchainInfo)
 
 	participations, _, _ := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
@@ -205,7 +205,8 @@ func RequestLoan() (wait time.Duration) {
 
 	mainchainInfo := loadMainchainInfo(api, ctx)
 
-	validatorsElectedFor, minStake, _, nextRoundSince, stakeHeldFor := loadBlockchainConfig(api, ctx, mainchainInfo)
+	validatorsElectedFor, minStake, maxStakeFactor, _, nextRoundSince, stakeHeldFor :=
+		loadBlockchainConfig(api, ctx, mainchainInfo)
 
 	participations, stopped, borrowerFee := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
@@ -228,7 +229,7 @@ func RequestLoan() (wait time.Duration) {
 
 	loanAddress := loadLoanAddress(validatorAddress, treasuryAddress, nextRoundSince, api, ctx, mainchainInfo)
 
-	stake, loan, minPayment, maxFactor, rewardShare := loadBorrowConfig(config.Borrow, minStake)
+	stake, loan, minPayment, maxFactor, rewardShare := loadBorrowConfig(config.Borrow, minStake, maxStakeFactor)
 
 	maxPunishment := getMaxPunishment(api, ctx, mainchainInfo, treasuryAddress, loan)
 
@@ -288,23 +289,11 @@ func RequestLoan() (wait time.Duration) {
 	log.Printf("   💎 Requesting a loan of %v TON, sending %v TON, for validation round %v",
 		tlb.FromNanoTON(loan).String(), tlb.FromNanoTON(value), formattedNextRoundSince)
 
-	confirmation := cell.BeginCell().
-		MustStoreUInt(0x654c5074, 32).
-		MustStoreUInt(uint64(nextRoundSince), 32).
-		MustStoreUInt(uint64(maxFactor), 32).
-		MustStoreBigUInt(new(big.Int).SetBytes(loanAddress.Data()), 256).
-		MustStoreBigUInt(adnlAddressBigInt, 256).
-		EndCell()
+	confirmation := buildStakeConfirmation(nextRoundSince, maxFactor, loanAddress, adnlAddressBigInt)
 
 	signature := engine.Sign(keyHash, confirmation)
 
-	newStakeMsg := cell.BeginCell().
-		MustStoreBigUInt(new(big.Int).SetBytes(publicKey), 256).
-		MustStoreUInt(uint64(nextRoundSince), 32).
-		MustStoreUInt(uint64(maxFactor), 32).
-		MustStoreBigUInt(adnlAddressBigInt, 256).
-		MustStoreRef(cell.BeginCell().MustStoreSlice(signature, 512).EndCell()).
-		EndCell()
+	newStakeMsg := buildNewStakeMsg(publicKey, nextRoundSince, maxFactor, adnlAddressBigInt, signature)
 
 	payload := cell.BeginCell().
 		MustStoreUInt(0x36335da9, 32).
@@ -365,7 +354,7 @@ func loadMainchainInfo(api ton.APIClientWrapped, ctx context.Context) *ton.Block
 }
 
 func loadBlockchainConfig(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt) (
-	uint32, *big.Int, *big.Int, uint32, uint32) {
+	uint32, *big.Int, uint32, *big.Int, uint32, uint32) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -376,12 +365,14 @@ func loadBlockchainConfig(api ton.APIClientWrapped, ctx context.Context, maincha
 	}
 
 	validatorsElectedFor, _, _, stakeHeldFor := GetElectionConfig(blockchainConfig.Get(ConfigElection))
-	minStake := GetMinStake(blockchainConfig.Get(ConfigStake))
+	stakeConfig := blockchainConfig.Get(ConfigStake)
+	minStake := GetMinStake(stakeConfig)
+	maxStakeFactor := GetMaxStakeFactor(stakeConfig)
 	currentValidators := blockchainConfig.Get(ConfigCurrentValidators)
 	currentVsetHash := new(big.Int).SetBytes(currentValidators.Hash())
 	_, nextRoundSince := GetVsetTimes(currentValidators)
 
-	return validatorsElectedFor, minStake, currentVsetHash, nextRoundSince, stakeHeldFor
+	return validatorsElectedFor, minStake, maxStakeFactor, currentVsetHash, nextRoundSince, stakeHeldFor
 }
 
 func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
@@ -576,7 +567,8 @@ func loadParticipation(participations *cell.Dictionary, nextRoundSince uint32) *
 	return &participation
 }
 
-func loadBorrowConfig(config Borrow, minStake *big.Int) (*big.Int, *big.Int, *big.Int, uint32, uint16) {
+func loadBorrowConfig(config Borrow, minStake *big.Int, maxStakeFactor uint32) (
+	*big.Int, *big.Int, *big.Int, uint32, uint16) {
 	stake, err := tlb.FromTON(config.Stake)
 	if err != nil {
 		panic("Error, invalid stake amount")
@@ -595,12 +587,43 @@ func loadBorrowConfig(config Borrow, minStake *big.Int) (*big.Int, *big.Int, *bi
 		panic("Error, invalid min payment")
 	}
 
-	if config.MaxFactorRatio < 1 {
-		panic("Error, max_factor_ratio must be >= 1.0")
+	// Resolved here, and here only: maxFactor goes into both the confirmation cell the validator
+	// engine signs and the new_stake_msg the elector reads, and the elector checks the signature
+	// over the first against the second. Anything that adjusts the value downstream of the signing
+	// makes the two disagree, which costs the whole round.
+	maxFactor, maxFactorNote := resolveMaxFactor(config.MaxFactorRatio, maxStakeFactor)
+	if maxFactorNote != "" {
+		log.Printf("   %v", maxFactorNote)
 	}
-	maxFactor := uint32(config.MaxFactorRatio * 65536)
 
 	return stake.Nano(), loan.Nano(), minPayment.Nano(), maxFactor, config.RewardShare
+}
+
+// buildStakeConfirmation and buildNewStakeMsg both carry max_factor, and the elector verifies the
+// signature over the first against the fields of the second. They take it as one argument from one
+// caller for that reason: a value adjusted between the two -- clamped on its way into only one of
+// them, say -- is a rejected stake and a missed round, and nothing before the elector would say so.
+
+func buildStakeConfirmation(roundSince uint32, maxFactor uint32, loanAddress *address.Address,
+	adnlAddress *big.Int) *cell.Cell {
+	return cell.BeginCell().
+		MustStoreUInt(0x654c5074, 32).
+		MustStoreUInt(uint64(roundSince), 32).
+		MustStoreUInt(uint64(maxFactor), 32).
+		MustStoreBigUInt(new(big.Int).SetBytes(loanAddress.Data()), 256).
+		MustStoreBigUInt(adnlAddress, 256).
+		EndCell()
+}
+
+func buildNewStakeMsg(publicKey []byte, roundSince uint32, maxFactor uint32, adnlAddress *big.Int,
+	signature []byte) *cell.Cell {
+	return cell.BeginCell().
+		MustStoreBigUInt(new(big.Int).SetBytes(publicKey), 256).
+		MustStoreUInt(uint64(roundSince), 32).
+		MustStoreUInt(uint64(maxFactor), 32).
+		MustStoreBigUInt(adnlAddress, 256).
+		MustStoreRef(cell.BeginCell().MustStoreSlice(signature, 512).EndCell()).
+		EndCell()
 }
 
 func loadBalance(w *wallet.Wallet, mainchainInfo *ton.BlockIDExt) *big.Int {

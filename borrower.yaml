@@ -18,8 +18,14 @@ borrow:
     # The minimum payment to pay for the loan, when it is accepted.
     min_payment: "0" # TON amount
 
-    # The max factor in relation to the minimum stake accepted by the elector.
-    max_factor_ratio: 3.0 # >= 1.0
+    # Caps your effective stake at this multiple of the smallest stake among the elected validators,
+    # which is how you bound your share of block production. Anything above the cap is returned by
+    # the elector at once and earns nothing for the round.
+    #
+    # When zero, the network config of max_stake_factor is used, which is what you want unless you
+    # are deliberately limiting how much validation your node takes on. A value above the network
+    # maximum is clamped down to it.
+    max_factor_ratio: 0 # 0 | >= 1.0
 
     # The ratio to divide the reward of validation between treasury and you.
     # It will be divided by 65535, so for example 26214 means 40%.
