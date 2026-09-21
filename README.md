@@ -40,7 +40,11 @@ When the protocol is deciding on loans, requests are sorted.
 
     So, those with more payment and less loan amount have a higher chance to win. To prevent validators from cheap competition, these amounts are rounded. Minimum payment is rounded to around 1 GRAM and loan amount is rounded to around 1100 GRAM.
 
-2. The second criteria is the validator reward share. Here, the validators who take less share of the reward, will have more opportunity.
+2. The second criteria **was** the validator reward share, and is no longer part of a bid. The treasury now publishes one share that every loan in a round carries, so it is the same number for every borrower and there is nothing to compete on. A request that still names its own share is refused outright.
+
+    You do not have to do anything: this borrower reads the treasury to see which kind it is, and builds its request to match, so the same build works before and after that change lands. `borrow.reward_share` is simply ignored against a treasury that sets it, and the log says so once per round when the two differ. Read the current value from `get_treasury_state` if you want to price a bid.
+
+    What follows describes the old behaviour, and is kept because a treasury that has not been upgraded still works this way.
 
     This value is specified in the range of 0-65535, so each step is around 0.0015% of the round's reward. It used to be 0-255, where a step was around 0.4% of the reward — but the step that matters is measured against your own take, not the whole reward, and at the shares validators actually bid a single step moved that take by more than 12%. At the bottom of the old range the only move left was to zero. The wider range is what lets validators genuinely compete here.
 

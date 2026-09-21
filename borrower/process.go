@@ -36,7 +36,7 @@ func Process() (wait time.Duration) {
 
 	validatorsElectedFor, _, _, currentVsetHash, nextRoundSince, _ := loadBlockchainConfig(api, ctx, mainchainInfo)
 
-	participations, _, _ := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
+	participations, _, _, _ := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
 	participateSince := getParticipateSince(api, ctx, mainchainInfo, treasuryAddress)
 
@@ -208,7 +208,7 @@ func RequestLoan() (wait time.Duration) {
 	validatorsElectedFor, minStake, maxStakeFactor, _, nextRoundSince, stakeHeldFor :=
 		loadBlockchainConfig(api, ctx, mainchainInfo)
 
-	participations, stopped, borrowerFee := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
+	participations, stopped, borrowerFee, protocolRewardShare := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
 	formattedNextRoundSince := time.Unix(int64(nextRoundSince), 0).Format(TimeFormat)
 
@@ -230,6 +230,18 @@ func RequestLoan() (wait time.Duration) {
 	loanAddress := loadLoanAddress(validatorAddress, treasuryAddress, nextRoundSince, api, ctx, mainchainInfo)
 
 	stake, loan, minPayment, maxFactor, rewardShare := loadBorrowConfig(config.Borrow, minStake, maxStakeFactor)
+
+	// When the treasury sets the share, borrow.reward_share is not a bid any more -- it is ignored,
+	// and the value below is what every loan in this round will carry. Kept in the comparison so a
+	// standing request bid under the old rules is re-sent once rather than left stale.
+	protocolSetsShare := protocolRewardShare != nil
+	if protocolSetsShare {
+		if rewardShare != *protocolRewardShare {
+			log.Printf("   ℹ️  The treasury sets reward_share to %v; borrow.reward_share (%v) is ignored",
+				*protocolRewardShare, rewardShare)
+		}
+		rewardShare = *protocolRewardShare
+	}
 
 	maxPunishment := getMaxPunishment(api, ctx, mainchainInfo, treasuryAddress, loan)
 
@@ -295,15 +307,16 @@ func RequestLoan() (wait time.Duration) {
 
 	newStakeMsg := buildNewStakeMsg(publicKey, nextRoundSince, maxFactor, adnlAddressBigInt, signature)
 
-	payload := cell.BeginCell().
+	body := cell.BeginCell().
 		MustStoreUInt(0x36335da9, 32).
 		MustStoreUInt(uint64(time.Now().Unix()), 64).
 		MustStoreUInt(uint64(nextRoundSince), 32).
 		MustStoreBigCoins(loan).
-		MustStoreBigCoins(minPayment).
-		MustStoreUInt(uint64(rewardShare), 16).
-		MustStoreRef(newStakeMsg).
-		EndCell()
+		MustStoreBigCoins(minPayment)
+	if !protocolSetsShare {
+		body = body.MustStoreUInt(uint64(rewardShare), 16)
+	}
+	payload := body.MustStoreRef(newStakeMsg).EndCell()
 
 	message := wallet.SimpleMessage(treasuryAddress, tlb.FromNanoTON(value), payload)
 
@@ -376,7 +389,7 @@ func loadBlockchainConfig(api ton.APIClientWrapped, ctx context.Context, maincha
 }
 
 func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
-	treasuryAddress *address.Address) (*cell.Dictionary, bool, uint16) {
+	treasuryAddress *address.Address) (*cell.Dictionary, bool, uint16, *uint16) {
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -410,6 +423,13 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 	// getter comment promises, and it stops this process before it requests a loan or sends a
 	// finish_participation, so both go silent at once. Check the tuple against
 	// contract/contracts/treasury.fc's get_treasury_state before assuming the node is at fault.
+	//
+	// The tuple is append-only from the 2026-09-07 release onward, so its LENGTH now tells this
+	// process which treasury it is talking to. A treasury carrying reward_share at index 26 sets
+	// the borrower's share itself and refuses a request that still sends one, so that index is
+	// read here and the request built to match. One build therefore works on both sides of the
+	// upgrade, which matters because the alternative is a window where every request bounces
+	// whichever order the two are rolled out in.
 	var participations *cell.Dictionary
 	if !treasuryState.MustIsNil(7) {
 		participations, err = treasuryState.MustCell(7).BeginParse().ToDict(32)
@@ -425,8 +445,23 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 	// Zero disables it entirely, floor included.
 	borrowerFee := uint16(treasuryState.MustInt(20).Uint64())
 
-	return participations, stopped, borrowerFee
+	// nil on a treasury that predates the field, which is the signal to keep sending the share in
+	// the request. Present means the protocol sets it and the request must NOT carry one: the
+	// handler stops reading it from the message, so an old-format body leaves 16 bits over and
+	// throws at end_parse. The message is bounceable, so the collateral comes back, but the round
+	// is missed.
+	var rewardShare *uint16
+	if fields := len(treasuryState.AsTuple()); fields > rewardShareIndex {
+		share := uint16(treasuryState.MustInt(rewardShareIndex).Uint64())
+		rewardShare = &share
+	}
+
+	return participations, stopped, borrowerFee, rewardShare
 }
+
+// Index 26, appended by the release that made the share a protocol parameter. Read by length
+// rather than assumed, because a treasury older than that release simply does not have it.
+const rewardShareIndex = 26
 
 func getParticipateSince(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
 	treasuryAddress *address.Address) uint32 {
