@@ -61,7 +61,7 @@ type Participation struct {
 }
 
 func LoadParticipation(c *cell.Cell) Participation {
-	s := c.BeginParse()
+	s := c.MustBeginParse()
 	return Participation{
 		State:           ParticipationState(s.MustLoadUInt(4)),
 		Size:            uint16(s.MustLoadUInt(16)),

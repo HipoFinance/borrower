@@ -57,7 +57,7 @@ func TestRequestBodyMatchesWhatTheTreasuryParses(t *testing.T) {
 
 	for _, protocolSetsShare := range []bool{true, false} {
 		body := RequestBody(42, 1790000000, loan, minPayment, 1799, protocolSetsShare, newStakeMsg)
-		s := body.BeginParse()
+		s := body.MustBeginParse()
 		if op := s.MustLoadUInt(32); op != OpRequestLoan {
 			t.Fatalf("op = %x", op)
 		}

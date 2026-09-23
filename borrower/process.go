@@ -3,6 +3,7 @@ package borrower
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -42,14 +43,18 @@ func Process() (wait time.Duration) {
 
 	participateSince := getParticipateSince(api, ctx, mainchainInfo, treasuryAddress)
 
-	participationsList := []*cell.HashmapKV{}
+	participationsList := []cell.DictKV{}
 	if participations != nil {
-		participationsList = participations.All()
+		all, err := participations.LoadAll()
+		if err != nil {
+			panic(fmt.Sprintf("Error in loading participations: %v", err))
+		}
+		participationsList = all
 	}
 
 	for _, kv := range participationsList {
-		roundSince := uint32(kv.Key.BeginParse().MustLoadUInt(32))
-		participation := LoadParticipation(kv.Value)
+		roundSince := uint32(kv.Key.MustLoadUInt(32))
+		participation := LoadParticipation(kv.Value.MustToCell())
 		formattedRoundSince := time.Unix(int64(roundSince), 0).Format(TimeFormat)
 		log.Printf("ℹ️  Round: %v, state: %v", formattedRoundSince, participation.State)
 		roundParticipateTime := participateSince
@@ -464,7 +469,7 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 	// whichever order the two are rolled out in.
 	var participations *cell.Dictionary
 	if !treasuryState.MustIsNil(7) {
-		participations, err = treasuryState.MustCell(7).BeginParse().ToDict(32)
+		participations, err = treasuryState.MustCell(7).MustBeginParse().ToDict(32)
 	}
 	if err != nil {
 		panic(fmt.Sprintf("Error in loading participations dictionary: %v", err))
@@ -613,7 +618,7 @@ func loadLoanAddress(validatorAddress *address.Address, treasuryAddress *address
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	slice := cell.BeginCell().MustStoreAddr(validatorAddress).EndCell().BeginParse()
+	slice := cell.BeginCell().MustStoreAddr(validatorAddress).EndCell().MustBeginParse()
 
 	res, err := api.RunGetMethod(ctx, mainchainInfo, treasuryAddress, "get_loan_address", slice, nextRoundSince)
 	if err != nil {
@@ -626,9 +631,12 @@ func loadLoanAddress(validatorAddress *address.Address, treasuryAddress *address
 func loadParticipation(participations *cell.Dictionary, nextRoundSince uint32) *Participation {
 	participation := Participation{}
 	if participations != nil {
-		p := participations.GetByIntKey(big.NewInt(int64(nextRoundSince)))
-		if p != nil {
-			participation = LoadParticipation(p)
+		p, err := participations.LoadValueByUintKey(uint64(nextRoundSince))
+		switch {
+		case err == nil:
+			participation = LoadParticipation(p.MustToCell())
+		case !errors.Is(err, cell.ErrNoSuchKeyInDict):
+			panic(fmt.Sprintf("Error in loading the participation for round %v: %v", nextRoundSince, err))
 		}
 	}
 	return &participation

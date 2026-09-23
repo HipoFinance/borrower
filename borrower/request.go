@@ -21,7 +21,7 @@ type Request struct {
 }
 
 func LoadRequest(c *cell.Cell) Request {
-	s := c.BeginParse()
+	s := c.MustBeginParse()
 	return Request{
 		MinPayment:   s.MustLoadBigCoins(),
 		RewardShare:  uint16(s.MustLoadUInt(16)),

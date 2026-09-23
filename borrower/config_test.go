@@ -165,12 +165,12 @@ func TestClampedMaxFactorReachesBothSignedCells(t *testing.T) {
 	publicKey := make([]byte, 32)
 	signature := make([]byte, 64)
 
-	confirmation := buildStakeConfirmation(roundSince, maxFactor, loanAddress, adnl).BeginParse()
+	confirmation := buildStakeConfirmation(roundSince, maxFactor, loanAddress, adnl).MustBeginParse()
 	confirmation.MustLoadUInt(32) // 0x654c5074
 	confirmation.MustLoadUInt(32) // round_since
 	inConfirmation := uint32(confirmation.MustLoadUInt(32))
 
-	newStakeMsg := buildNewStakeMsg(publicKey, roundSince, maxFactor, adnl, signature).BeginParse()
+	newStakeMsg := buildNewStakeMsg(publicKey, roundSince, maxFactor, adnl, signature).MustBeginParse()
 	newStakeMsg.MustLoadBigUInt(256) // validator public key
 	newStakeMsg.MustLoadUInt(32)     // round_since
 	inNewStakeMsg := uint32(newStakeMsg.MustLoadUInt(32))
