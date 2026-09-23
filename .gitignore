@@ -1,2 +1,4 @@
 .vscode
 wallet.secret
+dist/
+/bin/

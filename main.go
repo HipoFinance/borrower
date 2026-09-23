@@ -3,6 +3,8 @@ package main
 import (
 	"borrower/borrower"
 	"context"
+	"flag"
+	"fmt"
 	"log"
 	"math/rand"
 	"os"
@@ -12,8 +14,19 @@ import (
 	"time"
 )
 
+// version is stamped at build time: go build -ldflags "-X main.version=v3.0.0". A binary built any
+// other way reports "dev", so a log line always says whether it came from a release.
+var version = "dev"
+
 func main() {
-	log.Println("🟢 Borrower started")
+	showVersion := flag.Bool("version", false, "print the version and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
+
+	log.Printf("🟢 Borrower %v started", version)
 
 	stop, done := start()
 
