@@ -1,12 +1,29 @@
 [Unit]
 Description=Borrower for hGRAM: Hipo liquid staking protocol
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/root/go/bin
 ExecStart=/root/go/bin/borrower
 Restart=always
+RestartSec=10
+
+# Hardening. The borrower reads its config, the wallet secret and the validator-engine keys, runs
+# validator-engine-console, and talks to the network. It writes nothing to disk -- new validator keys
+# are written by the validator engine itself, over its control port -- so the system directories can
+# be read-only. Its home is left writable because the config and the binary live there; if you move
+# them elsewhere, ProtectHome=read-only is safe to add as well.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
 
 [Install]
 WantedBy=multi-user.target

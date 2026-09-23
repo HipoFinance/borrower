@@ -144,6 +144,17 @@ Rent a server that has the [minimum hardware requirements](https://docs.ton.org/
 
     - `validator_engine`: Configure your validator here, specifically enter your ADNL address from the `status` command of `mytonctrl`.
 
+    Then check the configuration without sending anything. From the directory holding `borrower.yaml`:
+
+    ```sh
+    borrower -dry-run
+    ```
+
+    It reads the chain and the validator engine once, and logs the loan request it would send: the
+    loan, the `min_payment`, the GRAM it would attach, and the bid's rate and efficiency. It stops
+    before the validator engine is configured or the wallet sends anything, and exits with status 1 if
+    something failed.
+
 4. Install the service file. Copy `borrower.service` to `/etc/systemd/system` and edit it according to your configuration. Then run these one by one:
 
     ```sh
@@ -154,6 +165,10 @@ Rent a server that has the [minimum hardware requirements](https://docs.ton.org/
     ```
 
 Now the service is installed and will always run. To view its logs use `journalctl -u borrower.service` or `journalctl -u borrower.service -f`.
+
+The service file restarts the borrower 10 seconds after it exits, and runs it with the system
+directories read-only and without the ability to gain privileges. The borrower writes nothing to disk,
+so this costs nothing; the comments in `borrower.service` say what each line is for.
 
 ## Building and Releasing
 
