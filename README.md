@@ -80,6 +80,12 @@ burner).
   This applies from treasury code `f003de4b…`, announced on 23 September 2026 and deployed no
   earlier than 26 September 2026. Before it, `min_payment` was not scaled.
 
+  One consequence to price for: the elector pays nothing on stake above its cap (`max_factor` times
+  the smallest elected stake), but the treasury scales `min_payment` on everything it lends you. A
+  loan that ends up taking most of the pool -- because it is the only one accepted -- can pass that
+  cap, and then even a `min_payment` at the pool's contractual share binds. If the pool is larger than
+  the cap, keep `min_payment` below `cap / pool` of the break-even figure below.
+
 A worked example with the figures of September 2026: a stake earned about **660 GRAM per 1,000,000
 staked** per round, and `reward_share` was 1799, so the pool's contractual share was 97.25% of the
 reward and the borrower's 2.75%, of which the borrower fee (50%) burned half. On a 1,000,000 GRAM
