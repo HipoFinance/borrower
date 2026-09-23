@@ -57,7 +57,8 @@ Requests are public the moment they land, and can be replaced until bidding clos
 `participate_since` (from the treasury's `get_times`). Replacing a request costs another request fee
 and keeps your collateral: the borrower sends only the fee and whatever the posted collateral falls
 short of. After every send it checks, two minutes later, that the request is actually standing, and
-sends again if the treasury refused it.
+sends again if the treasury refused it -- at most three times a round, and never within three minutes
+of the close.
 
 #### Pricing a bid
 

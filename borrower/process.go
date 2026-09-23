@@ -229,7 +229,12 @@ func RequestLoan() (wait time.Duration) {
 	validatorsElectedFor, minStake, maxStakeFactor, _, nextRoundSince, stakeHeldFor :=
 		loadBlockchainConfig(api, ctx, mainchainInfo)
 
-	participations, stopped, borrowerFee, rewardShare := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
+	participations, stopped, borrowerFee, protocolShare := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
+	if protocolShare == nil {
+		panic("Error, the treasury has no protocol-set reward share (index 26 of get_treasury_state); " +
+			"this borrower needs a treasury from 2026-09-21 or later")
+	}
+	rewardShare := *protocolShare
 
 	formattedNextRoundSince := time.Unix(int64(nextRoundSince), 0).Format(TimeFormat)
 
@@ -241,7 +246,7 @@ func RequestLoan() (wait time.Duration) {
 
 	adnlAddressBigInt := loadAdnlAddress(config.ValidatorEngine.AdnlAddress)
 
-	w := loadWallet(config.Wallet, api, treasuryAddress.IsTestnetOnly())
+	w := loadWallet(config.Wallet, api, loadGlobalID(api, ctx, mainchainInfo))
 
 	validatorAddress := w.Address()
 	validatorAddress.SetTestnetOnly(treasuryAddress.IsTestnetOnly())
@@ -258,34 +263,11 @@ func RequestLoan() (wait time.Duration) {
 	}
 
 	participation := loadParticipation(participations, nextRoundSince)
-	standing := loadStandingRequest(participation, validatorKey)
-	if standing != nil {
-		if standing.Unchanged(loan, minPayment, rewardShare) {
-			if sentRound == nextRoundSince {
-				log.Printf("   ✔️  The request sent for round %v is standing", formattedNextRoundSince)
-				sentRound = 0
-			}
-			log.Printf("   ⏩ Already participated in round %v", formattedNextRoundSince)
-			return
-		}
-		log.Printf("   ✏️  Updating last request to min_payment: %v, reward_share: %v, loan: %v",
-			minPayment, rewardShare, loan)
-	} else if sentRound == nextRoundSince {
-		// Sent, confirmed by the wallet, and not in the round's requests: the treasury refused it (it
-		// bounces with the collateral), or the wallet dropped the action. Either way no bid stands.
-		log.Printf("   ❌ The request sent for round %v is not among its requests; the treasury refused it "+
-			"or it never left the wallet. Sending again", formattedNextRoundSince)
-	}
 	if participation.State != ParticipationOpen {
+		// Includes a round that closed after our last send: decide_loan_requests has moved every
+		// request out of `requests`, so its absence says nothing about whether ours landed.
 		return notSending(wait, "⏩", fmt.Sprintf("Loan requests are not accepted at the moment for round %v",
 			formattedNextRoundSince))
-	}
-	participateSince := getParticipateSince(api, ctx, mainchainInfo, treasuryAddress)
-	if uint32(time.Now().Unix()) >= participateSince {
-		// request_loan refuses from participate_since on, even while the round is still open, and
-		// the refusal would look like a successful send from here.
-		return notSending(wait, "⏩", fmt.Sprintf("Bidding for round %v closed at %v", formattedNextRoundSince,
-			time.Unix(int64(participateSince), 0).Format(TimeFormat)))
 	}
 
 	collateral, _ := SizeRequest(loan, minPayment, stake, borrowerFee, func(s *big.Int) *big.Int {
@@ -295,6 +277,49 @@ func RequestLoan() (wait time.Duration) {
 		return notSending(0, "⚠️ ", fmt.Sprintf("A loan of %v GRAM with %v GRAM of collateral is under the "+
 			"network's min_stake of %v GRAM plus 1; the treasury would refuse it. Raise borrow.loan or borrow.stake",
 			tlb.FromNanoTON(loan).String(), tlb.FromNanoTON(collateral).String(), tlb.FromNanoTON(minStake).String()))
+	}
+
+	standing := loadStandingRequest(participation, validatorKey)
+	// A standing request is kept only while it is the bid this config makes AND its collateral still
+	// covers what the treasury checks: a higher punishment or more own stake needs a top-up.
+	if standing != nil && standing.Unchanged(loan, minPayment, rewardShare) &&
+		standing.StakeAmount.Cmp(collateral) >= 0 {
+		if sent.round == nextRoundSince {
+			log.Printf("   ✔️  The request sent for round %v is standing", formattedNextRoundSince)
+			sent = sendRecord{}
+		}
+		log.Printf("   ⏩ Already participated in round %v", formattedNextRoundSince)
+		return
+	}
+	if sent.round == nextRoundSince {
+		// Our last send has not produced the bid it carried. Before calling it refused, make sure this
+		// view of the chain is later than the send: a lagging liteserver shows the round as it was
+		// before our message arrived, and re-sending on that would post a whole second collateral.
+		if sent.viewPrecedesSend(time.Now(), treasuryLastLT(api, ctx, mainchainInfo, treasuryAddress)) {
+			log.Printf("   🕐 Round %v does not show the request sent at %v yet; looking again in %v",
+				formattedNextRoundSince, sent.at.Format(TimeFormat), standingCheck)
+			return standingCheck
+		}
+		if sent.exhausted() {
+			return notSending(wait, "❌", fmt.Sprintf("The treasury has not taken any of the %v requests sent "+
+				"for round %v; not sending again this round. Check the wallet's and the treasury's "+
+				"transactions", sent.attempts, formattedNextRoundSince))
+		}
+		log.Printf("   ❌ The request sent for round %v is not standing: the treasury refused it or it never "+
+			"left the wallet. Sending again (%v of %v)", formattedNextRoundSince, sent.attempts+1, maxSends)
+	} else if standing != nil {
+		log.Printf("   ✏️  Updating last request to min_payment: %v, reward_share: %v, loan: %v",
+			minPayment, rewardShare, loan)
+	}
+
+	participateSince := getParticipateSince(api, ctx, mainchainInfo, treasuryAddress)
+	if left := time.Until(time.Unix(int64(participateSince), 0)); left < sendMargin {
+		// request_loan refuses from participate_since on, even while the round is still open, and the
+		// refusal would look like a successful send from here. A send takes up to a couple of minutes
+		// between the engine, the wallet and delivery, and the host clock may be behind, so bidding stops
+		// short of the close.
+		return notSending(wait, "⏩", fmt.Sprintf("Bidding for round %v closes at %v, too close to send",
+			formattedNextRoundSince, time.Unix(int64(participateSince), 0).Format(TimeFormat)))
 	}
 	posted := big.NewInt(0)
 	if standing != nil {
@@ -343,11 +368,16 @@ func RequestLoan() (wait time.Duration) {
 
 	message := wallet.SimpleMessage(treasuryAddress, tlb.FromNanoTON(value), payload)
 
-	sendRequestLoan(w, message)
+	tx := sendRequestLoan(w, message)
 
 	// Sent is not standing: the treasury may still refuse it. Look again shortly, while there is time
 	// to send again before bidding closes.
-	sentRound = nextRoundSince
+	if sent.round != nextRoundSince {
+		sent = sendRecord{round: nextRoundSince}
+	}
+	sent.attempts++
+	sent.at = time.Now()
+	sent.lt = tx.LT
 	log.Printf("   ✅ Sent a loan request for round %v; checking that it stands in %v", formattedNextRoundSince,
 		standingCheck)
 
@@ -357,8 +387,50 @@ func RequestLoan() (wait time.Duration) {
 // standingCheck is how soon after a send the round's requests are read to confirm the request landed.
 const standingCheck = 2 * time.Minute
 
-// sentRound is the round the last request was sent for, until a later pass finds it standing.
-var sentRound uint32
+// sendMargin is how long before participate_since this borrower stops sending.
+const sendMargin = 3 * time.Minute
+
+// maxSends is how many requests one round may be sent before the borrower stops and says so. A
+// refusal that repeats -- a round over max_validators that evicts ours at once, say, which keeps the
+// whole fee -- must not be paid for every two minutes until bidding closes.
+const maxSends = 3
+
+// sendRecord is the last send for a round, until a later pass finds it standing. In memory only: a
+// restart forgets it, and the next pass treats the round afresh.
+type sendRecord struct {
+	round    uint32
+	attempts int
+	at       time.Time
+	// lt is the wallet transaction that sent it. The treasury processes the message after it, so a
+	// view in which the treasury's last transaction is no later than this has not seen it yet.
+	lt uint64
+}
+
+var sent sendRecord
+
+// viewPrecedesSend reports whether a view of the chain may predate the send, so that the request's
+// absence from it proves nothing: too soon after the send, or the treasury's last transaction in the
+// view is no later than the wallet transaction that sent it.
+func (s sendRecord) viewPrecedesSend(now time.Time, treasuryLT uint64) bool {
+	return now.Sub(s.at) < standingCheck || treasuryLT <= s.lt
+}
+
+// exhausted reports whether the round has had all the sends it may have.
+func (s sendRecord) exhausted() bool {
+	return s.attempts >= maxSends
+}
+
+// treasuryLastLT is the logical time of the treasury's last transaction in this view of the chain.
+func treasuryLastLT(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
+	treasuryAddress *address.Address) uint64 {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	account, err := api.GetAccount(ctx, mainchainInfo, treasuryAddress)
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting treasury account: %v", err))
+	}
+	return account.LastTxLT
+}
 
 // walletHeadroom is what the wallet must hold beyond the value it attaches, for its own fees.
 var walletHeadroom = big.NewInt(1000000000) // 1 GRAM
@@ -483,7 +555,7 @@ func loadBlockchainConfig(api ton.APIClientWrapped, ctx context.Context, maincha
 }
 
 func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
-	treasuryAddress *address.Address) (*cell.Dictionary, bool, uint16, uint16) {
+	treasuryAddress *address.Address) (*cell.Dictionary, bool, uint16, *uint16) {
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -502,7 +574,8 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 		panic(fmt.Sprintf("Error in getting treasury state: %v", err))
 	}
 
-	// get_treasury_state mirrors the treasury's storage order. The 28 values are:
+	// get_treasury_state is append-only since the 2026-09-07 release (it no longer mirrors storage
+	// order). The 28 values are:
 	//
 	//    0 total_coins             7 participations   14 window_duration     21 collection_codes
 	//    1 total_tokens            8 rounds_imbalance 15 last_settled_round  22 bill_codes
@@ -532,13 +605,14 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 	borrowerFee := uint16(treasuryState.MustInt(20).Uint64())
 
 	// Index 26: the reward share every loan carries, set by the protocol since the 2026-09-21
-	// release. A treasury without it still expects the share in the request, which this borrower no
-	// longer sends, so it is refused here rather than bidding in a format that would bounce.
-	if fields := len(treasuryState.AsTuple()); fields <= rewardShareIndex {
-		panic(fmt.Sprintf("Error, the treasury returns %v values from get_treasury_state and has no "+
-			"protocol-set reward share; this borrower needs a treasury from 2026-09-21 or later", fields))
+	// release. Nil on a treasury without it, which RequestLoan refuses to bid on: such a treasury still
+	// expects the share in the request, and this borrower no longer sends one. Process does not need
+	// it, and keeps driving rounds either way.
+	var rewardShare *uint16
+	if len(treasuryState.AsTuple()) > rewardShareIndex {
+		share := uint16(treasuryState.MustInt(rewardShareIndex).Uint64())
+		rewardShare = &share
 	}
-	rewardShare := uint16(treasuryState.MustInt(rewardShareIndex).Uint64())
 
 	return participations, stopped, borrowerFee, rewardShare
 }
@@ -630,16 +704,24 @@ func loadAdnlAddress(adnlAddress string) *big.Int {
 	return adnlAddressBigInt
 }
 
-func loadWallet(config Wallet, api ton.APIClientWrapped, testnet bool) *wallet.Wallet {
+// loadGlobalID reads the network's global_id (config 19): -239 on mainnet, -3 on testnet. A v5 wallet's
+// address depends on it, and the way the treasury address was written says nothing reliable about it.
+func loadGlobalID(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt) int32 {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cfg, err := api.GetBlockchainConfig(ctx, mainchainInfo, 19)
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting the network's global_id: %v", err))
+	}
+	return int32(cfg.Get(19).MustBeginParse().MustLoadInt(32))
+}
+
+func loadWallet(config Wallet, api ton.APIClientWrapped, globalID int32) *wallet.Wallet {
 	var version wallet.VersionConfig
 	switch config.Version {
 	case "v5r1final":
 		// A v5 wallet's address depends on the network it is on.
-		networkID := int32(wallet.MainnetGlobalID)
-		if testnet {
-			networkID = wallet.TestnetGlobalID
-		}
-		version = wallet.ConfigV5R1Final{NetworkGlobalID: networkID}
+		version = wallet.ConfigV5R1Final{NetworkGlobalID: globalID}
 	case "v4r2":
 		version = wallet.V4R2
 	case "v3r2":
@@ -805,12 +887,13 @@ func createValidationKey(engine *Engine, nextRoundSince, validatorsElectedFor ui
 	return keyHash, publicKey
 }
 
-func sendRequestLoan(w *wallet.Wallet, message *wallet.Message) {
+func sendRequestLoan(w *wallet.Wallet, message *wallet.Message) *tlb.Transaction {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	_, _, err := w.SendWaitTransaction(ctx, message)
+	tx, _, err := w.SendWaitTransaction(ctx, message)
 	if err != nil {
 		panic(fmt.Sprintf("Error in sending loan request: %v", err))
 	}
+	return tx
 }
