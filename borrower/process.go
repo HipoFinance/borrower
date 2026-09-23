@@ -228,7 +228,7 @@ func RequestLoan() (wait time.Duration) {
 	validatorsElectedFor, minStake, maxStakeFactor, _, nextRoundSince, stakeHeldFor :=
 		loadBlockchainConfig(api, ctx, mainchainInfo)
 
-	participations, stopped, borrowerFee, protocolRewardShare := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
+	participations, stopped, borrowerFee, rewardShare := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
 	formattedNextRoundSince := time.Unix(int64(nextRoundSince), 0).Format(TimeFormat)
 
@@ -249,19 +249,7 @@ func RequestLoan() (wait time.Duration) {
 
 	loanAddress := loadLoanAddress(validatorAddress, treasuryAddress, nextRoundSince, api, ctx, mainchainInfo)
 
-	stake, loan, minPayment, maxFactor, rewardShare := loadBorrowConfig(config.Borrow, minStake, maxStakeFactor)
-
-	// When the treasury sets the share, borrow.reward_share is not a bid any more -- it is ignored,
-	// and the value below is what every loan in this round will carry. Kept in the comparison so a
-	// standing request bid under the old rules is re-sent once rather than left stale.
-	protocolSetsShare := protocolRewardShare != nil
-	if protocolSetsShare {
-		if rewardShare != *protocolRewardShare {
-			log.Printf("   ℹ️  The treasury sets reward_share to %v; borrow.reward_share (%v) is ignored",
-				*protocolRewardShare, rewardShare)
-		}
-		rewardShare = *protocolRewardShare
-	}
+	stake, loan, minPayment, maxFactor := loadBorrowConfig(config.Borrow, minStake, maxStakeFactor)
 
 	maxPunishment := getMaxPunishment(api, ctx, mainchainInfo, treasuryAddress, loan)
 
@@ -325,8 +313,7 @@ func RequestLoan() (wait time.Duration) {
 
 	newStakeMsg := buildNewStakeMsg(publicKey, nextRoundSince, maxFactor, adnlAddressBigInt, signature)
 
-	payload := RequestBody(uint64(time.Now().Unix()), nextRoundSince, loan, minPayment, rewardShare,
-		protocolSetsShare, newStakeMsg)
+	payload := RequestBody(uint64(time.Now().Unix()), nextRoundSince, loan, minPayment, newStakeMsg)
 
 	message := wallet.SimpleMessage(treasuryAddress, tlb.FromNanoTON(value), payload)
 
@@ -426,7 +413,7 @@ func loadBlockchainConfig(api ton.APIClientWrapped, ctx context.Context, maincha
 }
 
 func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
-	treasuryAddress *address.Address) (*cell.Dictionary, bool, uint16, *uint16) {
+	treasuryAddress *address.Address) (*cell.Dictionary, bool, uint16, uint16) {
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -445,28 +432,20 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 		panic(fmt.Sprintf("Error in getting treasury state: %v", err))
 	}
 
-	// get_treasury_state mirrors the treasury's storage order, and fields get inserted into it
-	// rather than appended, so these indices move whenever the layout does. The 24 values are:
+	// get_treasury_state mirrors the treasury's storage order. The 28 values are:
 	//
-	//    0 total_coins             6 parent            12 previous_rate       18 proposed_governor
-	//    1 total_tokens            7 participations    13 current_rate        19 governance_fee
-	//    2 total_staking           8 rounds_imbalance  14 round_duration      20 borrower_fee
-	//    3 total_unstaking         9 stopped?          15 last_settled_round  21 collection_codes
-	//    4 total_borrowers_stake  10 instant_mint?     16 halter              22 bill_codes
-	//    5 deficit                11 loan_codes        17 governor            23 old_parents
+	//    0 total_coins             7 participations   14 window_duration     21 collection_codes
+	//    1 total_tokens            8 rounds_imbalance 15 last_settled_round  22 bill_codes
+	//    2 total_staking           9 stopped?         16 halter              23 old_parents
+	//    3 total_unstaking        10 instant_mint?    17 governor            24 mid_rate
+	//    4 total_borrowers_stake  11 loan_codes       18 proposed_governor   25 mid_round
+	//    5 deficit                12 previous_rate    19 governance_fee      26 reward_share
+	//    6 parent                 13 current_rate     20 borrower_fee        27 total_request_fees
 	//
-	// A shift shows up as tonutils-go's "incorrect result type" on the first read below, because
-	// the value landing at index 7 stops being a cell. That is the loud failure the contract's
-	// getter comment promises, and it stops this process before it requests a loan or sends a
-	// finish_participation, so both go silent at once. Check the tuple against
+	// This reads 7, 9, 20 and 26. The tuple has been append-only since the 2026-09-07 release, so
+	// these indices hold; a shift would show up as tonutils-go's "incorrect result type" on the first
+	// read below, because the value landing at index 7 stops being a cell. Check the tuple against
 	// contract/contracts/treasury.fc's get_treasury_state before assuming the node is at fault.
-	//
-	// The tuple is append-only from the 2026-09-07 release onward, so its LENGTH now tells this
-	// process which treasury it is talking to. A treasury carrying reward_share at index 26 sets
-	// the borrower's share itself and refuses a request that still sends one, so that index is
-	// read here and the request built to match. One build therefore works on both sides of the
-	// upgrade, which matters because the alternative is a window where every request bounces
-	// whichever order the two are rolled out in.
 	var participations *cell.Dictionary
 	if !treasuryState.MustIsNil(7) {
 		participations, err = treasuryState.MustCell(7).MustBeginParse().ToDict(32)
@@ -482,22 +461,18 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 	// Zero disables it entirely, floor included.
 	borrowerFee := uint16(treasuryState.MustInt(20).Uint64())
 
-	// nil on a treasury that predates the field, which is the signal to keep sending the share in
-	// the request. Present means the protocol sets it and the request must NOT carry one: the
-	// handler stops reading it from the message, so an old-format body leaves 16 bits over and
-	// throws at end_parse. The message is bounceable, so the collateral comes back, but the round
-	// is missed.
-	var rewardShare *uint16
-	if fields := len(treasuryState.AsTuple()); fields > rewardShareIndex {
-		share := uint16(treasuryState.MustInt(rewardShareIndex).Uint64())
-		rewardShare = &share
+	// Index 26: the reward share every loan carries, set by the protocol since the 2026-09-21
+	// release. A treasury without it still expects the share in the request, which this borrower no
+	// longer sends, so it is refused here rather than bidding in a format that would bounce.
+	if fields := len(treasuryState.AsTuple()); fields <= rewardShareIndex {
+		panic(fmt.Sprintf("Error, the treasury returns %v values from get_treasury_state and has no "+
+			"protocol-set reward share; this borrower needs a treasury from 2026-09-21 or later", fields))
 	}
+	rewardShare := uint16(treasuryState.MustInt(rewardShareIndex).Uint64())
 
 	return participations, stopped, borrowerFee, rewardShare
 }
 
-// Index 26, appended by the release that made the share a protocol parameter. Read by length
-// rather than assumed, because a treasury older than that release simply does not have it.
 const rewardShareIndex = 26
 
 func getParticipateSince(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
@@ -643,7 +618,7 @@ func loadParticipation(participations *cell.Dictionary, nextRoundSince uint32) *
 }
 
 func loadBorrowConfig(config Borrow, minStake *big.Int, maxStakeFactor uint32) (
-	*big.Int, *big.Int, *big.Int, uint32, uint16) {
+	*big.Int, *big.Int, *big.Int, uint32) {
 	stake, err := tlb.FromTON(config.Stake)
 	if err != nil {
 		panic("Error, invalid stake amount")
@@ -671,7 +646,7 @@ func loadBorrowConfig(config Borrow, minStake *big.Int, maxStakeFactor uint32) (
 		log.Printf("   %v", maxFactorNote)
 	}
 
-	return stake.Nano(), loan.Nano(), minPayment.Nano(), maxFactor, config.RewardShare
+	return stake.Nano(), loan.Nano(), minPayment.Nano(), maxFactor
 }
 
 // buildStakeConfirmation and buildNewStakeMsg both carry max_factor, and the elector verifies the

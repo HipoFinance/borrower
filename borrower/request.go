@@ -55,25 +55,23 @@ func RequestValue(maxPunishment, requestLoanFee, minPayment, stake *big.Int, bor
 	return value
 }
 
-// RequestBody builds the request_loan body. A treasury that sets the reward share itself refuses a
-// body that still carries one -- its end_parse throws on the 16 leftover bits -- so the share is
-// written only for a treasury that still reads it.
-func RequestBody(queryID uint64, roundSince uint32, loan, minPayment *big.Int, rewardShare uint16,
-	protocolSetsShare bool, newStakeMsg *cell.Cell) *cell.Cell {
-	body := cell.BeginCell().
+// RequestBody builds the request_loan body. It carries no reward share: the treasury sets one for
+// every loan, and its end_parse refuses a body that still has 16 bits of share before the ref.
+func RequestBody(queryID uint64, roundSince uint32, loan, minPayment *big.Int, newStakeMsg *cell.Cell) *cell.Cell {
+	return cell.BeginCell().
 		MustStoreUInt(OpRequestLoan, 32).
 		MustStoreUInt(queryID, 64).
 		MustStoreUInt(uint64(roundSince), 32).
 		MustStoreBigCoins(loan).
-		MustStoreBigCoins(minPayment)
-	if !protocolSetsShare {
-		body = body.MustStoreUInt(uint64(rewardShare), 16)
-	}
-	return body.MustStoreRef(newStakeMsg).EndCell()
+		MustStoreBigCoins(minPayment).
+		MustStoreRef(newStakeMsg).
+		EndCell()
 }
 
 // Unchanged reports whether a request already standing in the treasury is the one this borrower
-// would send, so that it is not replaced -- each replacement costs another request fee.
+// would send, so that it is not replaced -- each replacement costs another request fee. The share is
+// compared too: a request keeps the share it was made under, so one made before the governor changed
+// it is re-sent to carry the current value.
 func (r Request) Unchanged(loan, minPayment *big.Int, rewardShare uint16) bool {
 	return r.MinPayment.Cmp(minPayment) == 0 && r.RewardShare == rewardShare && r.LoanAmount.Cmp(loan) == 0
 }

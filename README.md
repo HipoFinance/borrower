@@ -38,8 +38,9 @@ A request carries two numbers you choose:
 
 The **reward share** is not part of the bid. The treasury sets one value for every loan
 (`reward_share`, out of 65535, index 26 of `get_treasury_state`), and a request that tries to name
-its own is refused. This borrower reads the treasury and builds the request to match, so
-`borrow.reward_share` in the config is ignored against it.
+its own is refused. This borrower reads it from the treasury, so there is nothing to configure; an
+old `reward_share` or `validator_reward_share` key left in `borrower.yaml` is ignored. It needs a
+treasury from 21 September 2026 or later, when the share became the protocol's.
 
 #### How requests are ranked and accepted
 

@@ -31,20 +31,6 @@ borrow:
     # maximum is clamped down to it.
     max_factor_ratio: 0 # 0 | >= 1.0
 
-    # The ratio to divide the reward of validation between treasury and you.
-    # It will be divided by 65535, so for example 26214 means 40%.
-    #
-    # This replaces validator_reward_share, which was out of 255. Multiply an old value by 257:
-    # 8 becomes 2056, 102 becomes 26214. The borrower refuses to start on the old key rather than
-    # reading the old number on the new scale, which would give away almost your whole share.
-    #
-    # IGNORED once the treasury sets the share itself. The share stopped being part of a bid: the
-    # treasury publishes one value that every loan carries, and a request that still names its own
-    # is refused. This borrower reads which kind of treasury it is talking to and builds the request
-    # to match, so the key can stay here -- it is simply no longer used, and the log says so once
-    # per round when it differs from the protocol's value.
-    reward_share: 26214 # 0-65535
-
 # Configure the wallet used to pay for loan requests.
 wallet:
     # The type of the secret file.

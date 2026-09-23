@@ -49,43 +49,37 @@ func TestRequestValueAddsOwnStakeAndLeavesItsInputsAlone(t *testing.T) {
 	}
 }
 
-// Parsed the way the treasury parses it: op, query_id, round_since, loan_amount, min_payment, then --
-// on a treasury that sets the share -- nothing but the new_stake_msg ref, or end_parse throws.
+// Parsed the way the treasury parses it: op, query_id, round_since, loan_amount, min_payment, then
+// nothing but the new_stake_msg ref, or end_parse throws.
 func TestRequestBodyMatchesWhatTheTreasuryParses(t *testing.T) {
 	newStakeMsg := cell.BeginCell().MustStoreUInt(7, 8).EndCell()
 	loan, minPayment := gram(t, "1000000"), gram(t, "651")
 
-	for _, protocolSetsShare := range []bool{true, false} {
-		body := RequestBody(42, 1790000000, loan, minPayment, 1799, protocolSetsShare, newStakeMsg)
-		s := body.MustBeginParse()
-		if op := s.MustLoadUInt(32); op != OpRequestLoan {
-			t.Fatalf("op = %x", op)
-		}
-		if q := s.MustLoadUInt(64); q != 42 {
-			t.Errorf("query_id = %v", q)
-		}
-		if r := s.MustLoadUInt(32); r != 1790000000 {
-			t.Errorf("round_since = %v", r)
-		}
-		if l := s.MustLoadBigCoins(); l.Cmp(loan) != 0 {
-			t.Errorf("loan_amount = %v", l)
-		}
-		if m := s.MustLoadBigCoins(); m.Cmp(minPayment) != 0 {
-			t.Errorf("min_payment = %v", m)
-		}
-		if protocolSetsShare {
-			if s.BitsLeft() != 0 {
-				t.Errorf("%v bits left before the ref; the treasury's end_parse would refuse this", s.BitsLeft())
-			}
-		} else if share := s.MustLoadUInt(16); share != 1799 {
-			t.Errorf("borrower_reward_share = %v", share)
-		}
-		if ref := s.MustLoadRef().MustToCell(); string(ref.Hash()) != string(newStakeMsg.Hash()) {
-			t.Error("new_stake_msg ref does not round-trip")
-		}
-		if s.BitsLeft() != 0 || s.RefsNum() != 0 {
-			t.Errorf("trailing data: %v bits, %v refs", s.BitsLeft(), s.RefsNum())
-		}
+	body := RequestBody(42, 1790000000, loan, minPayment, newStakeMsg)
+	s := body.MustBeginParse()
+	if op := s.MustLoadUInt(32); op != OpRequestLoan {
+		t.Fatalf("op = %x", op)
+	}
+	if q := s.MustLoadUInt(64); q != 42 {
+		t.Errorf("query_id = %v", q)
+	}
+	if r := s.MustLoadUInt(32); r != 1790000000 {
+		t.Errorf("round_since = %v", r)
+	}
+	if l := s.MustLoadBigCoins(); l.Cmp(loan) != 0 {
+		t.Errorf("loan_amount = %v", l)
+	}
+	if m := s.MustLoadBigCoins(); m.Cmp(minPayment) != 0 {
+		t.Errorf("min_payment = %v", m)
+	}
+	if s.BitsLeft() != 0 {
+		t.Errorf("%v bits left before the ref; the treasury's end_parse would refuse this", s.BitsLeft())
+	}
+	if ref := s.MustLoadRef().MustToCell(); string(ref.Hash()) != string(newStakeMsg.Hash()) {
+		t.Error("new_stake_msg ref does not round-trip")
+	}
+	if s.RefsNum() != 0 {
+		t.Errorf("%v trailing refs", s.RefsNum())
 	}
 }
 

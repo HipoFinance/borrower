@@ -10,19 +10,16 @@ import (
 	"github.com/xssnick/tonutils-go/tvm/cell"
 )
 
-// The migration guard is the only thing standing between an unmigrated config and a validator that
-// silently hands the pool almost its entire share, so it is worth an actual test.
-func TestRewardShareMigrationGuard(t *testing.T) {
+// The share is no longer configured, but an operator upgrading keeps their old borrower.yaml. Either
+// old key must still load, and must not change anything that is configured.
+func TestOldShareKeysAreIgnored(t *testing.T) {
 	cases := []struct {
-		name    string
-		body    string
-		refused bool
-		share   uint16
+		name string
+		body string
 	}{
-		{"migrated", "borrow:\n    active: yes\n    reward_share: 2056\n", false, 2056},
-		{"old key still present", "borrow:\n    active: yes\n    validator_reward_share: 8\n", true, 0},
-		{"missing while borrowing", "borrow:\n    active: yes\n", true, 0},
-		{"missing while inactive", "borrow:\n    active: no\n", false, 0},
+		{"no share key", "borrow:\n    active: yes\n    min_payment: \"651\"\n"},
+		{"reward_share", "borrow:\n    active: yes\n    min_payment: \"651\"\n    reward_share: 2056\n"},
+		{"validator_reward_share", "borrow:\n    active: yes\n    min_payment: \"651\"\n    validator_reward_share: 8\n"},
 	}
 
 	original := ConfigFile
@@ -43,17 +40,11 @@ func TestRewardShareMigrationGuard(t *testing.T) {
 
 			ConfigFile = f.Name()
 			config, err := ReadConfig()
-			if tc.refused {
-				if err == nil {
-					t.Fatalf("expected the config to be refused, got reward_share=%d", config.Borrow.RewardShare)
-				}
-				return
-			}
 			if err != nil {
-				t.Fatalf("expected the config to be accepted, got %v", err)
+				t.Fatalf("expected the config to load, got %v", err)
 			}
-			if config.Borrow.RewardShare != tc.share {
-				t.Fatalf("expected reward_share %d, got %d", tc.share, config.Borrow.RewardShare)
+			if !config.Borrow.Active || config.Borrow.MinPayment != "651" {
+				t.Fatalf("configured values were not read: %+v", config.Borrow)
 			}
 		})
 	}
