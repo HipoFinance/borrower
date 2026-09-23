@@ -132,8 +132,8 @@ Rent a server that has the [minimum hardware requirements](https://docs.ton.org/
 
       For a root user that path is `/root/go/bin`.
 
-    - or build from source: install Go (`snap install go --classic`), then run `make install` (or
-      `go install`) in a clone of this repository.
+    - or build from source: install Go 1.26 or later (`snap install go --classic`), then run
+      `make install` (or `go install`) in a clone of this repository.
 
 3. Download the `borrower.yaml` template config file from this repository. Copy it to `~/go/bin` alongside the `borrower` executable. Then edit it and set your configuration:
 

@@ -533,13 +533,21 @@ func getRequestLoanFee(api ton.APIClientWrapped, ctx context.Context, mainchainI
 		panic("Error, treasury account is not active")
 	}
 
-	// treasuryFees, err := api.RunGetMethod(ctx, mainchainInfo, treasuryAddress, "get_treasury_fees", 0)
-	// if err != nil {
-	// 	panic(fmt.Sprintf("Error in getting treasury fees: %v", err))
-	// }
+	// Read, not assumed. request_loan takes the fee out of the incoming value and keeps the rest as
+	// collateral, so a fee larger than what this borrower attached makes the treasury's collateral
+	// check fail and the request bounce -- while the send itself still looks successful here. The
+	// value used to be hard-coded at 1 GRAM, which was above the live fee (0.724 GRAM in September
+	// 2026) only by luck; gas prices are the network's, not ours.
+	treasuryFees, err := api.RunGetMethod(ctx, mainchainInfo, treasuryAddress, "get_treasury_fees", 0)
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting treasury fees: %v", err))
+	}
 
-	// return treasuryFees.MustInt(0)
-	return big.NewInt(1000000000)
+	// Ten percent of slack, so that a fee that rises between this read and the send does not bounce
+	// the request. Nothing is lost to it: whatever the fee does not take becomes collateral and comes
+	// back with loan_result.
+	fee := treasuryFees.MustInt(0)
+	return new(big.Int).Add(fee, new(big.Int).Div(fee, big.NewInt(10)))
 }
 
 func loadAdnlAddress(adnlAddress string) *big.Int {
