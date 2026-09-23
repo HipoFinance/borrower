@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xssnick/tonutils-go/address"
@@ -23,6 +24,7 @@ func Process() (wait time.Duration) {
 		if err := recover(); err != nil {
 			wait = 0
 			log.Printf("❌ %s", err)
+			resetApi()
 		}
 	}()
 
@@ -185,11 +187,24 @@ func Process() (wait time.Duration) {
 	return
 }
 
+// DryRun makes RequestLoan stop before it touches the validator engine or the wallet: it reads the
+// chain, works out the request it would send, logs it, and returns. See the -dry-run flag in main.go.
+var DryRun bool
+
+// lastRequestError is the error the most recent RequestLoan recovered from, for a dry run to report.
+var lastRequestError error
+
+// LastRequestError returns the error the most recent RequestLoan pass failed with, or nil.
+func LastRequestError() error { return lastRequestError }
+
 func RequestLoan() (wait time.Duration) {
+	lastRequestError = nil
 	defer func() {
 		if err := recover(); err != nil {
 			wait = 0
+			lastRequestError = fmt.Errorf("%v", err)
 			log.Printf("   ❌ %s", err)
+			resetApi()
 		}
 	}()
 
@@ -256,9 +271,7 @@ func RequestLoan() (wait time.Duration) {
 	if participation.Requests != nil && participation.Requests.Get(validatorKey) != nil {
 		cell := participation.Requests.Get(validatorKey)
 		r := LoadRequest(cell)
-		if r.MinPayment.Cmp(minPayment) == 0 &&
-			r.RewardShare == rewardShare &&
-			r.LoanAmount.Cmp(loan) == 0 {
+		if r.Unchanged(loan, minPayment, rewardShare) {
 			log.Printf("   ⏩ Already participated in round %v", formattedNextRoundSince)
 			return
 		} else {
@@ -271,26 +284,22 @@ func RequestLoan() (wait time.Duration) {
 		return
 	}
 
-	value := big.NewInt(1000000000)
-	if maxPunishment.Cmp(value) == 1 {
-		value = maxPunishment
-	}
-	value = value.Add(value, requestLoanFee)
-	value = value.Add(value, minPayment)
-	value = value.Add(value, stake)
-	if borrowerFee != 0 {
-		// The treasury requires collateral to cover min_payment + fee::min_burn + max_punishment, so
-		// the floor has to be sent up front or the request is rejected outright. It is collateral, not
-		// a fee: whatever the burn does not take comes back with loan_result at recovery. The constant
-		// is 1 GRAM in contracts/imports/constants.fc and is not exposed by a getter.
-		value = value.Add(value, minBurn)
-	}
+	value := RequestValue(maxPunishment, requestLoanFee, minPayment, stake, borrowerFee)
 
 	balance := loadBalance(w, mainchainInfo)
 	if balance.Cmp(value) != 1 {
 		log.Printf("   ⚠️  Low balance, need at least %v GRAM, but your wallet balance is %v GRAM",
 			tlb.FromNanoTON(value).String(), tlb.FromNanoTON(balance).String())
 		return 0
+	}
+
+	if DryRun {
+		log.Printf("   🧪 Dry run: would request a loan of %v GRAM at min_payment %v, sending %v GRAM, "+
+			"for validation round %v", tlb.FromNanoTON(loan).String(), tlb.FromNanoTON(minPayment).String(),
+			tlb.FromNanoTON(value).String(), formattedNextRoundSince)
+		log.Printf("   🧪 Bid: %v", BidRate(minPayment, loan))
+		log.Printf("   🧪 Stopping before the validator engine and the wallet are touched")
+		return
 	}
 
 	log.Printf("   🛠  Configuring validator engine for round %v", formattedNextRoundSince)
@@ -311,16 +320,8 @@ func RequestLoan() (wait time.Duration) {
 
 	newStakeMsg := buildNewStakeMsg(publicKey, nextRoundSince, maxFactor, adnlAddressBigInt, signature)
 
-	body := cell.BeginCell().
-		MustStoreUInt(0x36335da9, 32).
-		MustStoreUInt(uint64(time.Now().Unix()), 64).
-		MustStoreUInt(uint64(nextRoundSince), 32).
-		MustStoreBigCoins(loan).
-		MustStoreBigCoins(minPayment)
-	if !protocolSetsShare {
-		body = body.MustStoreUInt(uint64(rewardShare), 16)
-	}
-	payload := body.MustStoreRef(newStakeMsg).EndCell()
+	payload := RequestBody(uint64(time.Now().Unix()), nextRoundSince, loan, minPayment, rewardShare,
+		protocolSetsShare, newStakeMsg)
 
 	message := wallet.SimpleMessage(treasuryAddress, tlb.FromNanoTON(value), payload)
 
@@ -339,17 +340,44 @@ func loadConfig() *Config {
 	return config
 }
 
+// One connection pool for the life of the process. Every pool connects to each liteserver in the
+// global config and starts its own ping and listener goroutines, which keep it alive until Stop; this
+// used to build a fresh pool on every pass, about twice a minute, and never stop any of them. The pool
+// is dropped only after a failed pass, so that the next pass connects afresh -- which is all that
+// building a new one each time was buying.
+var (
+	apiMu     sync.Mutex
+	apiPool   *liteclient.ConnectionPool
+	apiClient ton.APIClientWrapped
+	apiSource string
+)
+
 func loadApi(config *Config) (ton.APIClientWrapped, context.Context) {
-	client := liteclient.NewConnectionPool()
-	err := client.AddConnectionsFromConfigFile(config.GlobalConfig)
-	if err != nil {
-		panic(fmt.Sprintf("Error in loading global config: %v", err))
+	apiMu.Lock()
+	defer apiMu.Unlock()
+	if apiPool == nil || apiSource != config.GlobalConfig {
+		if apiPool != nil {
+			apiPool.Stop()
+		}
+		apiPool, apiClient = nil, nil
+		pool := liteclient.NewConnectionPool()
+		if err := pool.AddConnectionsFromConfigFile(config.GlobalConfig); err != nil {
+			pool.Stop()
+			panic(fmt.Sprintf("Error in loading global config: %v", err))
+		}
+		apiPool, apiClient, apiSource = pool, ton.NewAPIClient(pool).WithRetry(10), config.GlobalConfig
 	}
+	return apiClient, apiPool.StickyContext(context.Background())
+}
 
-	ctx := client.StickyContext(context.Background())
-
-	api := ton.NewAPIClient(client).WithRetry(10)
-	return api, ctx
+// resetApi stops the shared pool, so the next pass connects afresh.
+func resetApi() {
+	apiMu.Lock()
+	defer apiMu.Unlock()
+	if apiPool != nil {
+		apiPool.Stop()
+	}
+	apiPool, apiClient = nil, nil
 }
 
 func checkLiteserverIsSync(engine *Engine) {

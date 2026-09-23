@@ -20,9 +20,21 @@ var version = "dev"
 
 func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	dryRun := flag.Bool("dry-run", false,
+		"read the chain once, log the loan request this config would send, and exit without "+
+			"touching the validator engine or the wallet")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(version)
+		return
+	}
+	if *dryRun {
+		log.Printf("🧪 Borrower %v dry run", version)
+		borrower.DryRun = true
+		borrower.RequestLoan()
+		if err := borrower.LastRequestError(); err != nil {
+			os.Exit(1)
+		}
 		return
 	}
 
