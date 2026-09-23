@@ -20,39 +20,81 @@ To prevent validators from doing nasty things to the blockchain, after a round o
 
 ### Competition Between Validators
 
-Since hGRAM is a permission-less smart-contract, anyone can request a loan from it, and to manage the limited resources of the protocol, loans will be given to validators with best return on investment (RoI).
+The treasury is permission-less: anyone can request a loan. When there are more requests than GRAM
+to lend, the treasury decides who gets one. This section describes exactly how, so that you can
+price a request instead of guessing. The authoritative source is `decide_loan_requests` and
+`recover_stake_result` in [the contract](https://github.com/HipoFinance/contract), and its
+[integration guide](https://github.com/HipoFinance/contract/blob/main/docs/integration.md).
 
-When requesting a loan, there are a few parameters sent alongside your request, which can determine the winners:
+#### What you bid
 
-- **Loan Amount**: This is the minimum amount of loan that you want to receive, and indicates that you're not interested in any amount less than it.
+A request carries two numbers you choose:
 
-- **Validator Reward Share**: Your share of the earned rewards. For example, if you set it at 40%, you'll receive 40% of the rewards and 60% will go to the protocol, to be distributed between stakers.
+- **`loan`**: how much GRAM you want to borrow. Together with your own `stake` it must reach the
+  network's `min_stake` (config 17), though in practice the smallest stake the elector actually
+  elects is much higher than that, and a stake below it earns nothing.
+- **`min_payment`**: what you promise the pool for the loan. It is best read as a **rate**: see
+  *Pricing a bid* below.
 
-- **Minimum Payment**: To prevent attacks to the protocol, and to make the competition more fair, validators can set a minimum payment. This amount will be deducted from their returned reward in case their loan is accepted. So, validators can calculate the returned rewards for the round they're participating in, find out how much they'll earn, and set a reasonable amount here to have more opportunity to win.
+The **reward share** is not part of the bid. The treasury sets one value for every loan
+(`reward_share`, out of 65535, index 26 of `get_treasury_state`), and a request that tries to name
+its own is refused. This borrower reads the treasury and builds the request to match, so
+`borrow.reward_share` in the config is ignored against it.
 
-- Stake Amount: In addition, validators can bring their own GRAM to the table if they have a substantial amount. This amount will be added to their loan. For example, if you have 100,000 GRAM, you can then ask for just 200,000 GRAM and bring your own GRAM to reach the minimum of 300,000 GRAM.
+#### How requests are ranked and accepted
 
-When the protocol is deciding on loans, requests are sorted.
+1. Requests are ranked on **efficiency**, `min_payment / loan`, with both rounded down first:
+   `min_payment` to units of about 1.07 GRAM and `loan` to units of about 1,100 GRAM. On a tie the
+   smaller loan goes first. The borrower logs your bid's efficiency when it sends a request.
+2. The treasury serves requests in that order. **A request that does not fit in what is left is
+   skipped, and the next one is tried**, so a lower-ranked request still wins if it fits. Rank only
+   decides the order of service.
+3. Whatever is left after the accepted requests is added to them in proportion to their `loan`
+   (the *accrued* amount), so the pool is always fully lent.
 
-1. The sort criteria is first based on the return on the investment. In effect, the ratio of guaranteed return on investment is calculated and loans with more RoI will be accepted first. You may assume the formulae like this:
+Requests are public the moment they land, and can be replaced until bidding closes at
+`participate_since` (from the treasury's `get_times`). Replacing a request costs another request fee
+and keeps your collateral.
 
-    > RoI = Minimum Payment / Loan Amount
+#### Pricing a bid
 
-    So, those with more payment and less loan amount have a higher chance to win. To prevent validators from cheap competition, these amounts are rounded. Minimum payment is rounded to around 1 GRAM and loan amount is rounded to around 1100 GRAM.
+When a round ends, the pool receives the larger of your `min_payment` and its **contractual share**
+of the reward, `reward × (65535 − reward_share) / 65535`. You keep the rest, less the borrower fee
+(`borrower_fee`, index 20: a share of your own contractual reward, at least 1 GRAM, sent to the HPO
+burner).
 
-2. The second criteria **was** the validator reward share, and is no longer part of a bid. The treasury now publishes one share that every loan in a round carries, so it is the same number for every borrower and there is nothing to compete on. A request that still names its own share is refused outright.
+- A `min_payment` **below** the pool's contractual share is never paid. It costs you nothing and
+  only sets your rank.
+- A `min_payment` **above** it is paid out of your reward, and if the reward falls short, out of
+  your collateral. The pool never collects more than the reward plus your collateral.
+- **`min_payment` is scaled to the whole stake.** When the treasury adds an accrued amount to your
+  loan, it scales `min_payment` by `(loan + accrued) / loan`. What you promise is therefore a rate
+  on everything your loan stakes, and the efficiency you rank on is exactly that rate. Price it that
+  way: a bid priced on leftover you *expect* to receive, but divided by a smaller `loan`, pays that
+  same inflated rate on the leftover too.
 
-    You do not have to do anything: this borrower reads the treasury to see which kind it is, and builds its request to match, so the same build works before and after that change lands. `borrow.reward_share` is simply ignored against a treasury that sets it, and the log says so once per round when the two differ. Read the current value from `get_treasury_state` if you want to price a bid.
+  This applies from treasury code `f003de4b…`, announced on 23 September 2026 and deployed no
+  earlier than 26 September 2026. Before it, `min_payment` was not scaled.
 
-    What follows describes the old behaviour, and is kept because a treasury that has not been upgraded still works this way.
+A worked example with the figures of September 2026: a stake earned about **660 GRAM per 1,000,000
+staked** per round, and `reward_share` was 1799, so the pool's contractual share was 97.25% of the
+reward and the borrower's 2.75%, of which the borrower fee (50%) burned half. On a 1,000,000 GRAM
+loan that is a reward of about 660, of which the pool's share is about 642 and the borrower keeps
+about 9. A `min_payment` of about **651** is where a borrower breaks even: above it the loan costs
+money, below it the promise is only a ranking signal. The borrower logs this rate as
+`GRAM per 1,000,000 staked` with every request. Rewards move from round to round (between about 644
+and 689 per million over the same period), so a bid priced exactly at break-even loses money in a
+round that pays less.
 
-    This value is specified in the range of 0-65535, so each step is around 0.0015% of the round's reward. It used to be 0-255, where a step was around 0.4% of the reward — but the step that matters is measured against your own take, not the whole reward, and at the shares validators actually bid a single step moved that take by more than 12%. At the bottom of the old range the only move left was to zero. The wider range is what lets validators genuinely compete here.
+#### Collateral, and a loan that is not elected
 
-    An old configuration is not converted for you: multiply your old value by 257 and rename the key to `reward_share`. 8 becomes 2056, 102 becomes 26214. The borrower refuses to start on the old key, because an old number is perfectly valid on the new scale and would quietly give away almost your whole share.
+With the request you send collateral of at least `min_payment` + the maximum punishment for your
+stake (currently 101 GRAM) + 1 GRAM for the burn floor, plus the request fee. The borrower computes
+and sends this for you, and refuses to send when the wallet cannot cover it. Collateral comes back
+with the loan result, less whatever the round took from it.
 
-3. The third criteria is the loan amount itself. Whoever asks for less loan has a better chance of winning.
-
-As a result, loans are given in a competition, and the best return for stakers and validators is incentivized.
+If your stake is accepted but not elected, it earns nothing and the pool takes your `min_payment`
+(scaled, if the loan accrued) out of your collateral, up to the whole collateral.
 
 ## Setup
 
@@ -77,9 +119,20 @@ Rent a server that has the [minimum hardware requirements](https://docs.ton.org/
 
 2. Install Borrower. Either:
 
-    - download a pre-built and released version from the releases section of Github. Copy it to this path: `~/go/bin`, for example, if you're using a root user copy it to `/root/go/bin`.
+    - download a release from the [releases page](https://github.com/HipoFinance/borrower/releases):
+      `borrower-linux-amd64` or `borrower-linux-arm64`, plus `SHA256SUMS`. Check the download and
+      install it:
 
-    - or download from the source, install `go` by runnig `snap install go --classic`, and then run `go install` in the downloaded git repository.
+      ```sh
+      sha256sum --check --ignore-missing SHA256SUMS
+      install -m 755 borrower-linux-amd64 ~/go/bin/borrower
+      borrower -version
+      ```
+
+      For a root user that path is `/root/go/bin`.
+
+    - or build from source: install Go (`snap install go --classic`), then run `make install` (or
+      `go install`) in a clone of this repository.
 
 3. Download the `borrower.yaml` template config file from this repository. Copy it to `~/go/bin` alongside the `borrower` executable. Then edit it and set your configuration:
 
@@ -101,6 +154,26 @@ Rent a server that has the [minimum hardware requirements](https://docs.ton.org/
     ```
 
 Now the service is installed and will always run. To view its logs use `journalctl -u borrower.service` or `journalctl -u borrower.service -f`.
+
+## Building and Releasing
+
+`make` lists the targets. The ones that matter:
+
+- `make test` runs `go vet`, checks formatting and runs the tests; `make build` builds `bin/borrower`
+  for this machine.
+- `make dist VERSION=v3.0.0` cross-compiles `dist/borrower-linux-amd64` and
+  `dist/borrower-linux-arm64` with `-trimpath`, stamps the version into them (`borrower -version`
+  prints it, and the log's first line repeats it), and writes `dist/SHA256SUMS`.
+
+CI runs the tests on every push and pull request. A release is cut by pushing a tag:
+
+```sh
+git tag -a v3.0.0 -m "v3.0.0"
+git push origin v3.0.0
+```
+
+The release workflow runs the tests, builds with `make dist`, and publishes a GitHub release with
+the two binaries and `SHA256SUMS`. A binary built any other way reports its version as `dev`.
 
 ## License
 

@@ -1,4 +1,4 @@
-# Friendly address of hTON treasury.
+# Friendly address of the hGRAM treasury.
 treasury: EQCLyZHP4Xe8fpchQz76O-_RmUhaVc_9BAoGyJrwJrcbz2eZ
 
 # The path to the ton global config.
@@ -10,13 +10,17 @@ borrow:
     active: yes # yes | no
 
     # Additional amount to stake alongside the borrowed loan.
-    stake: "0" # TON amount
+    stake: "0" # GRAM amount
 
     # The minimum loan amount. When zero, network config of min_stake will be used.
-    loan: "0" # TON amount
+    loan: "0" # GRAM amount
 
-    # The minimum payment to pay for the loan, when it is accepted.
-    min_payment: "0" # TON amount
+    # What you promise the pool for this loan, as an amount for `loan`. It is a RATE, not a fixed sum:
+    # the treasury ranks bids on min_payment / loan, and when it adds leftover capital to your loan it
+    # scales min_payment to match, so you pay the same rate on everything the loan stakes. The pool
+    # receives the larger of this and its contractual share of the reward, so a min_payment below that
+    # share costs you nothing extra and only sets your rank. See "Pricing a bid" in the README.
+    min_payment: "0" # GRAM amount
 
     # Caps your effective stake at this multiple of the smallest stake among the elected validators,
     # which is how you bound your share of block production. Anything above the cap is returned by

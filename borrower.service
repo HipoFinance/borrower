@@ -1,5 +1,5 @@
 [Unit]
-Description=the Borrower for hTON: Hipo liquid staking protocol
+Description=Borrower for hGRAM: Hipo liquid staking protocol
 After=network.target
 
 [Service]

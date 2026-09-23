@@ -288,7 +288,7 @@ func RequestLoan() (wait time.Duration) {
 
 	balance := loadBalance(w, mainchainInfo)
 	if balance.Cmp(value) != 1 {
-		log.Printf("   ⚠️  Low balance, need at least %v TON, but your wallet balance is %v TON",
+		log.Printf("   ⚠️  Low balance, need at least %v GRAM, but your wallet balance is %v GRAM",
 			tlb.FromNanoTON(value).String(), tlb.FromNanoTON(balance).String())
 		return 0
 	}
@@ -298,8 +298,12 @@ func RequestLoan() (wait time.Duration) {
 	keyHash, publicKey :=
 		createValidationKey(engine, nextRoundSince, validatorsElectedFor, config.ValidatorEngine.AdnlAddress)
 
-	log.Printf("   💎 Requesting a loan of %v TON, sending %v TON, for validation round %v",
+	log.Printf("   💎 Requesting a loan of %v GRAM, sending %v GRAM, for validation round %v",
 		tlb.FromNanoTON(loan).String(), tlb.FromNanoTON(value), formattedNextRoundSince)
+	// The treasury scales min_payment to everything the loan stakes, leftover included, so the rate
+	// is what this bid promises -- see "Pricing a bid" in the README.
+	log.Printf("   🏷  Bid: %v; any leftover the treasury adds to this loan is charged at the same rate",
+		BidRate(minPayment, loan))
 
 	confirmation := buildStakeConfirmation(nextRoundSince, maxFactor, loanAddress, adnlAddressBigInt)
 
