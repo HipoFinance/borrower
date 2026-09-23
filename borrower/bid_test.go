@@ -45,7 +45,7 @@ func TestEfficiencyOfATinyLoanDoesNotDivideByZero(t *testing.T) {
 
 func TestBidRate(t *testing.T) {
 	got := BidRate(gram(t, "651"), gram(t, "1000000"))
-	want := "651.00 GRAM per 1,000,000 staked (efficiency 666)"
+	want := "651.00 GRAM per 1,000,000 lent (efficiency 666)"
 	if got != want {
 		t.Errorf("BidRate = %q, want %q", got, want)
 	}

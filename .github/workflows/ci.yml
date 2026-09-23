@@ -13,8 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # The newest stable Go, not go.mod's minimum: go.mod says what the code needs, and a build with
+      # the bare minimum would miss every patch release after it.
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
       - run: make test
+      - run: go test -race ./...
       - run: make dist VERSION=ci

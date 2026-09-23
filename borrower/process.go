@@ -2,6 +2,7 @@ package borrower
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -235,13 +236,12 @@ func RequestLoan() (wait time.Duration) {
 	wait = time.Until(time.Unix(int64(nextRoundSince+stakeHeldFor+60), 0))
 
 	if !config.Borrow.Active {
-		log.Printf("   ↩️  Borrow config is inactive")
-		return 0
+		return notSending(0, "↩️", "Borrow config is inactive")
 	}
 
 	adnlAddressBigInt := loadAdnlAddress(config.ValidatorEngine.AdnlAddress)
 
-	w := loadWallet(config.Wallet, api)
+	w := loadWallet(config.Wallet, api, treasuryAddress.IsTestnetOnly())
 
 	validatorAddress := w.Address()
 	validatorAddress.SetTestnetOnly(treasuryAddress.IsTestnetOnly())
@@ -251,39 +251,65 @@ func RequestLoan() (wait time.Duration) {
 
 	stake, loan, minPayment, maxFactor := loadBorrowConfig(config.Borrow, minStake, maxStakeFactor)
 
-	maxPunishment := getMaxPunishment(api, ctx, mainchainInfo, treasuryAddress, loan)
-
 	requestLoanFee := getRequestLoanFee(api, ctx, mainchainInfo, treasuryAddress)
 
 	if stopped {
-		log.Printf("   🔲 Treasury is stopped")
-		return 0
+		return notSending(0, "🔲", "Treasury is stopped")
 	}
 
 	participation := loadParticipation(participations, nextRoundSince)
-	if participation.Requests != nil && participation.Requests.Get(validatorKey) != nil {
-		cell := participation.Requests.Get(validatorKey)
-		r := LoadRequest(cell)
-		if r.Unchanged(loan, minPayment, rewardShare) {
+	standing := loadStandingRequest(participation, validatorKey)
+	if standing != nil {
+		if standing.Unchanged(loan, minPayment, rewardShare) {
+			if sentRound == nextRoundSince {
+				log.Printf("   ✔️  The request sent for round %v is standing", formattedNextRoundSince)
+				sentRound = 0
+			}
 			log.Printf("   ⏩ Already participated in round %v", formattedNextRoundSince)
 			return
-		} else {
-			log.Printf("   ✏️  Updating last request to min_payment: %v, reward_share: %v, loan: %v",
-				minPayment, rewardShare, loan)
 		}
+		log.Printf("   ✏️  Updating last request to min_payment: %v, reward_share: %v, loan: %v",
+			minPayment, rewardShare, loan)
+	} else if sentRound == nextRoundSince {
+		// Sent, confirmed by the wallet, and not in the round's requests: the treasury refused it (it
+		// bounces with the collateral), or the wallet dropped the action. Either way no bid stands.
+		log.Printf("   ❌ The request sent for round %v is not among its requests; the treasury refused it "+
+			"or it never left the wallet. Sending again", formattedNextRoundSince)
 	}
 	if participation.State != ParticipationOpen {
-		log.Printf("   ⏩ Loan requests are not accepted at the moment for round %v", formattedNextRoundSince)
-		return
+		return notSending(wait, "⏩", fmt.Sprintf("Loan requests are not accepted at the moment for round %v",
+			formattedNextRoundSince))
+	}
+	participateSince := getParticipateSince(api, ctx, mainchainInfo, treasuryAddress)
+	if uint32(time.Now().Unix()) >= participateSince {
+		// request_loan refuses from participate_since on, even while the round is still open, and
+		// the refusal would look like a successful send from here.
+		return notSending(wait, "⏩", fmt.Sprintf("Bidding for round %v closed at %v", formattedNextRoundSince,
+			time.Unix(int64(participateSince), 0).Format(TimeFormat)))
 	}
 
-	value := RequestValue(maxPunishment, requestLoanFee, minPayment, stake, borrowerFee)
+	collateral, _ := SizeRequest(loan, minPayment, stake, borrowerFee, func(s *big.Int) *big.Int {
+		return getMaxPunishment(api, ctx, mainchainInfo, treasuryAddress, s)
+	})
+	if !CoversMinStake(collateral, loan, minStake) {
+		return notSending(0, "⚠️ ", fmt.Sprintf("A loan of %v GRAM with %v GRAM of collateral is under the "+
+			"network's min_stake of %v GRAM plus 1; the treasury would refuse it. Raise borrow.loan or borrow.stake",
+			tlb.FromNanoTON(loan).String(), tlb.FromNanoTON(collateral).String(), tlb.FromNanoTON(minStake).String()))
+	}
+	posted := big.NewInt(0)
+	if standing != nil {
+		posted = standing.StakeAmount
+	}
+	value := SendValue(collateral, requestLoanFee, posted)
 
+	// The value, and the wallet's own fees for sending it on top. The wallet sends with
+	// pay-gas-separately and ignore-errors, so a balance that covers the value but not the fees drops
+	// the message while the wallet's transaction still confirms.
+	need := new(big.Int).Add(value, walletHeadroom)
 	balance := loadBalance(w, mainchainInfo)
-	if balance.Cmp(value) != 1 {
-		log.Printf("   ⚠️  Low balance, need at least %v GRAM, but your wallet balance is %v GRAM",
-			tlb.FromNanoTON(value).String(), tlb.FromNanoTON(balance).String())
-		return 0
+	if balance.Cmp(need) < 0 {
+		return notSending(0, "⚠️ ", fmt.Sprintf("Low balance, need at least %v GRAM, but your wallet balance is %v GRAM",
+			tlb.FromNanoTON(need).String(), tlb.FromNanoTON(balance).String()))
 	}
 
 	if DryRun {
@@ -291,7 +317,7 @@ func RequestLoan() (wait time.Duration) {
 			"for validation round %v", tlb.FromNanoTON(loan).String(), tlb.FromNanoTON(minPayment).String(),
 			tlb.FromNanoTON(value).String(), formattedNextRoundSince)
 		log.Printf("   🧪 Bid: %v", BidRate(minPayment, loan))
-		log.Printf("   🧪 Stopping before the validator engine and the wallet are touched")
+		log.Printf("   🧪 Stopping before the validator engine is configured or the wallet sends anything")
 		return
 	}
 
@@ -302,10 +328,10 @@ func RequestLoan() (wait time.Duration) {
 
 	log.Printf("   💎 Requesting a loan of %v GRAM, sending %v GRAM, for validation round %v",
 		tlb.FromNanoTON(loan).String(), tlb.FromNanoTON(value), formattedNextRoundSince)
-	// The treasury scales min_payment to everything the loan stakes, leftover included, so the rate
-	// is what this bid promises -- see "Pricing a bid" in the README.
-	log.Printf("   🏷  Bid: %v; any leftover the treasury adds to this loan is charged at the same rate",
-		BidRate(minPayment, loan))
+	// From the accrual-pricing treasury release on, min_payment is scaled to everything the treasury
+	// lends the loan, leftover included, so the rate is what this bid promises -- see "Pricing a bid"
+	// in the README.
+	log.Printf("   🏷  Bid: %v", BidRate(minPayment, loan))
 
 	confirmation := buildStakeConfirmation(nextRoundSince, maxFactor, loanAddress, adnlAddressBigInt)
 
@@ -319,9 +345,53 @@ func RequestLoan() (wait time.Duration) {
 
 	sendRequestLoan(w, message)
 
-	log.Printf("   ✅ Sent a loan request for round %v", formattedNextRoundSince)
+	// Sent is not standing: the treasury may still refuse it. Look again shortly, while there is time
+	// to send again before bidding closes.
+	sentRound = nextRoundSince
+	log.Printf("   ✅ Sent a loan request for round %v; checking that it stands in %v", formattedNextRoundSince,
+		standingCheck)
 
-	return
+	return standingCheck
+}
+
+// standingCheck is how soon after a send the round's requests are read to confirm the request landed.
+const standingCheck = 2 * time.Minute
+
+// sentRound is the round the last request was sent for, until a later pass finds it standing.
+var sentRound uint32
+
+// walletHeadroom is what the wallet must hold beyond the value it attaches, for its own fees.
+var walletHeadroom = big.NewInt(1000000000) // 1 GRAM
+
+// ErrWouldNotSend is what a dry run reports when a real pass would have sent nothing.
+var ErrWouldNotSend = errors.New("a real run would not send a request")
+
+// notSending logs why this pass sends nothing, and in a dry run records it, so that -dry-run exits
+// non-zero for a configuration that would never bid.
+func notSending(wait time.Duration, icon, why string) time.Duration {
+	log.Printf("   %v %v", icon, why)
+	if DryRun {
+		lastRequestError = fmt.Errorf("%w: %v", ErrWouldNotSend, why)
+	}
+	return wait
+}
+
+// loadStandingRequest is this borrower's request in the round, or nil when there is none. A
+// dictionary that fails to parse is an error, not an absent request: read as absent, it would send a
+// full second collateral.
+func loadStandingRequest(participation *Participation, validatorKey *cell.Cell) *Request {
+	if participation.Requests == nil {
+		return nil
+	}
+	s, err := participation.Requests.LoadValue(validatorKey)
+	if errors.Is(err, cell.ErrNoSuchKeyInDict) {
+		return nil
+	}
+	if err != nil {
+		panic(fmt.Sprintf("Error in reading the round's requests: %v", err))
+	}
+	r := LoadRequest(s.MustToCell())
+	return &r
 }
 
 func loadConfig() *Config {
@@ -560,11 +630,16 @@ func loadAdnlAddress(adnlAddress string) *big.Int {
 	return adnlAddressBigInt
 }
 
-func loadWallet(config Wallet, api ton.APIClientWrapped) *wallet.Wallet {
+func loadWallet(config Wallet, api ton.APIClientWrapped, testnet bool) *wallet.Wallet {
 	var version wallet.VersionConfig
 	switch config.Version {
 	case "v5r1final":
-		version = wallet.ConfigV5R1Final{NetworkGlobalID: wallet.MainnetGlobalID}
+		// A v5 wallet's address depends on the network it is on.
+		networkID := int32(wallet.MainnetGlobalID)
+		if testnet {
+			networkID = wallet.TestnetGlobalID
+		}
+		version = wallet.ConfigV5R1Final{NetworkGlobalID: networkID}
 	case "v4r2":
 		version = wallet.V4R2
 	case "v3r2":
@@ -584,7 +659,20 @@ func loadWallet(config Wallet, api ton.APIClientWrapped) *wallet.Wallet {
 		seed := strings.Split(strings.Trim(string(secret), " \n\t"), " ")
 		w, err = wallet.FromSeed(api, seed, version)
 	case "binary":
-		w, err = wallet.FromPrivateKey(api, secret, version)
+		// A 32-byte file is a seed (what mytonctrl writes); a 64-byte one is a full ed25519 private
+		// key. Read as a private key, a seed yields a garbage public key and a wallet at the wrong
+		// address.
+		var key ed25519.PrivateKey
+		switch len(secret) {
+		case ed25519.SeedSize:
+			key = ed25519.NewKeyFromSeed(secret)
+		case ed25519.PrivateKeySize:
+			key = ed25519.PrivateKey(secret)
+		default:
+			panic(fmt.Sprintf("Error, a binary wallet secret is %v bytes; expected a %v-byte seed or a %v-byte key",
+				len(secret), ed25519.SeedSize, ed25519.PrivateKeySize))
+		}
+		w, err = wallet.FromPrivateKey(api, key, version)
 	default:
 		panic(fmt.Sprintf("Error, invalid wallet type, expected mnemonic or binary but got: %v", config.Type))
 	}

@@ -98,3 +98,53 @@ func TestUnchangedComparesEveryBidField(t *testing.T) {
 		t.Error("a different share should be re-sent")
 	}
 }
+
+func TestSizeRequestReadsThePunishmentOnWhatTheTreasuryChecks(t *testing.T) {
+	loan, minPayment := gram(t, "1000000"), gram(t, "651")
+	flat := func(*big.Int) *big.Int { return gram(t, "101") }
+	collateral, p := SizeRequest(loan, minPayment, big.NewInt(0), 32767, flat)
+	if p.Cmp(gram(t, "101")) != 0 || collateral.Cmp(gram(t, "753")) != 0 {
+		t.Errorf("flat fine: punishment %v, collateral %v; want 101 and 753", p, collateral)
+	}
+
+	// A fine that grows with the stake: 101 + 0.1% of it. The treasury checks it on loan + collateral.
+	growing := func(s *big.Int) *big.Int {
+		return new(big.Int).Add(gram(t, "101"), new(big.Int).Div(s, big.NewInt(1000)))
+	}
+	collateral, p = SizeRequest(loan, minPayment, big.NewInt(0), 32767, growing)
+	checked := growing(new(big.Int).Add(loan, collateral))
+	required := new(big.Int).Add(minPayment, checked)
+	required.Add(required, minBurn)
+	// One re-read is enough while the fine is a small fraction of the stake: within a nano of 0.1% of
+	// the collateral's own growth.
+	if shortBy := new(big.Int).Sub(required, collateral); shortBy.Cmp(gram(t, "0.01")) > 0 {
+		t.Errorf("collateral %v is %v short of what the treasury checks (punishment %v)", collateral, shortBy, p)
+	}
+}
+
+func TestCoversMinStake(t *testing.T) {
+	minStake := gram(t, "300000")
+	if !CoversMinStake(gram(t, "753"), gram(t, "300000"), minStake) {
+		t.Error("a min_stake loan with collateral above 1 GRAM covers it")
+	}
+	if CoversMinStake(gram(t, "753"), gram(t, "299000"), minStake) {
+		t.Error("a loan 1000 GRAM under min_stake with 753 of collateral does not")
+	}
+}
+
+// A replacement carries the posted collateral forward, so it must not send it again.
+func TestSendValueOnlyTopsUpAReplacement(t *testing.T) {
+	fee, collateral := gram(t, "0.8"), gram(t, "753")
+	if v := SendValue(collateral, fee, big.NewInt(0)); v.Cmp(gram(t, "753.8")) != 0 {
+		t.Errorf("new request sends %v, want 753.8", v)
+	}
+	if v := SendValue(collateral, fee, gram(t, "753")); v.Cmp(fee) != 0 {
+		t.Errorf("replacement with enough posted sends %v, want just the fee", v)
+	}
+	if v := SendValue(collateral, fee, gram(t, "700")); v.Cmp(gram(t, "53.8")) != 0 {
+		t.Errorf("replacement 53 short sends %v, want 53.8", v)
+	}
+	if v := SendValue(collateral, fee, gram(t, "900")); v.Cmp(fee) != 0 {
+		t.Errorf("replacement with more than enough posted sends %v, want just the fee", v)
+	}
+}

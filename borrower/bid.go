@@ -23,9 +23,10 @@ func Efficiency(minPayment, loan *big.Int) uint64 {
 	return e.Uint64()
 }
 
-// BidRate describes a bid as what it costs per million GRAM staked. The treasury scales min_payment
-// to everything a loan stakes, including any leftover it adds to the loan, so this rate -- not the
-// min_payment alone -- is what the bid actually promises.
+// BidRate describes a bid as what it costs per million GRAM lent. From the accrual-pricing treasury
+// release on, min_payment is scaled to everything the treasury lends the loan, including any leftover
+// it adds, so this rate -- not the min_payment alone -- is what the bid promises. Own stake and
+// collateral are staked too but are not charged.
 func BidRate(minPayment, loan *big.Int) string {
 	if loan.Sign() == 0 {
 		return "no loan"
@@ -34,6 +35,6 @@ func BidRate(minPayment, loan *big.Int) string {
 		new(big.Int).Mul(minPayment, big.NewInt(1_000_000)),
 		loan,
 	)
-	return fmt.Sprintf("%s GRAM per 1,000,000 staked (efficiency %d)",
+	return fmt.Sprintf("%s GRAM per 1,000,000 lent (efficiency %d)",
 		perMillion.FloatString(2), Efficiency(minPayment, loan))
 }

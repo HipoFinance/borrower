@@ -10,14 +10,26 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Refuse a tag that is not on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
       - run: make test
-      - run: make dist VERSION=${{ github.ref_name }}
+      - run: make dist VERSION="$TAG"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/* --title "${{ github.ref_name }}" --generate-notes --verify-tag
+        run: |
+          prerelease=()
+          case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+          { echo "Built with $(go version | cut -d' ' -f3)."; } > notes.md
+          gh release create "$TAG" dist/* --title "$TAG" --notes-file notes.md --generate-notes \
+            --verify-tag "${prerelease[@]}"

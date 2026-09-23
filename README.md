@@ -55,7 +55,9 @@ treasury from 21 September 2026 or later, when the share became the protocol's.
 
 Requests are public the moment they land, and can be replaced until bidding closes at
 `participate_since` (from the treasury's `get_times`). Replacing a request costs another request fee
-and keeps your collateral.
+and keeps your collateral: the borrower sends only the fee and whatever the posted collateral falls
+short of. After every send it checks, two minutes later, that the request is actually standing, and
+sends again if the treasury refused it.
 
 #### Pricing a bid
 
@@ -83,7 +85,7 @@ reward and the borrower's 2.75%, of which the borrower fee (50%) burned half. On
 loan that is a reward of about 660, of which the pool's share is about 642 and the borrower keeps
 about 9. A `min_payment` of about **651** is where a borrower breaks even: above it the loan costs
 money, below it the promise is only a ranking signal. The borrower logs this rate as
-`GRAM per 1,000,000 staked` with every request. Rewards move from round to round (between about 644
+`GRAM per 1,000,000 lent` with every request. Rewards move from round to round (between about 644
 and 689 per million over the same period), so a bid priced exactly at break-even loses money in a
 round that pays less.
 
@@ -126,11 +128,12 @@ Rent a server that has the [minimum hardware requirements](https://docs.ton.org/
 
       ```sh
       sha256sum --check --ignore-missing SHA256SUMS
-      install -m 755 borrower-linux-amd64 ~/go/bin/borrower
-      borrower -version
+      install -D -m 755 borrower-linux-amd64 ~/go/bin/borrower
+      ~/go/bin/borrower -version
       ```
 
-      For a root user that path is `/root/go/bin`.
+      For a root user that path is `/root/go/bin`. The first release is published once the accrual
+      pricing treasury is live; until then, build from source.
 
     - or build from source: install Go 1.26 or later (`snap install go --classic`), then run
       `make install` (or `go install`) in a clone of this repository.
@@ -151,10 +154,11 @@ Rent a server that has the [minimum hardware requirements](https://docs.ton.org/
     borrower -dry-run
     ```
 
-    It reads the chain and the validator engine once, and logs the loan request it would send: the
-    loan, the `min_payment`, the GRAM it would attach, and the bid's rate and efficiency. It stops
-    before the validator engine is configured or the wallet sends anything, and exits with status 1 if
-    something failed.
+    It reads the chain, the validator engine and the wallet once, and logs the loan request it would
+    send: the loan, the `min_payment`, the GRAM it would attach, and the bid's rate and efficiency. It
+    stops before the validator engine is configured or the wallet sends anything. It exits 0 when it
+    would send a request (or yours already stands), 2 when a real run would send none -- inactive,
+    wallet too short, bidding closed, a loan under `min_stake` -- and 1 on an error.
 
 4. Install the service file. Copy `borrower.service` to `/etc/systemd/system` and edit it according to your configuration. Then run these one by one:
 
@@ -188,8 +192,10 @@ git tag -a v3.0.0 -m "v3.0.0"
 git push origin v3.0.0
 ```
 
-The release workflow runs the tests, builds with `make dist`, and publishes a GitHub release with
-the two binaries and `SHA256SUMS`. A binary built any other way reports its version as `dev`.
+The release workflow refuses a tag that is not on `main`, runs the tests, builds with `make dist`
+using the newest stable Go, and publishes a GitHub release with the two binaries and `SHA256SUMS`
+(a tag with a `-`, such as `v3.0.0-rc1`, is marked as a prerelease). A binary built any other way
+reports its version as `dev`.
 
 ## License
 

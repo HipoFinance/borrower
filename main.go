@@ -3,6 +3,7 @@ package main
 import (
 	"borrower/borrower"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -21,8 +22,9 @@ var version = "dev"
 func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	dryRun := flag.Bool("dry-run", false,
-		"read the chain once, log the loan request this config would send, and exit without "+
-			"touching the validator engine or the wallet")
+		"read the chain, the validator engine and the wallet once, log the loan request this config "+
+			"would send, and exit without configuring the engine or sending anything. Exits 0 when a "+
+			"request would be sent (or one already stands), 2 when a real run would send none, 1 on an error")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(version)
@@ -32,7 +34,9 @@ func main() {
 		log.Printf("🧪 Borrower %v dry run", version)
 		borrower.DryRun = true
 		borrower.RequestLoan()
-		if err := borrower.LastRequestError(); err != nil {
+		if err := borrower.LastRequestError(); errors.Is(err, borrower.ErrWouldNotSend) {
+			os.Exit(2)
+		} else if err != nil {
 			os.Exit(1)
 		}
 		return

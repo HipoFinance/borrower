@@ -75,3 +75,50 @@ func RequestBody(queryID uint64, roundSince uint32, loan, minPayment *big.Int, n
 func (r Request) Unchanged(loan, minPayment *big.Int, rewardShare uint16) bool {
 	return r.MinPayment.Cmp(minPayment) == 0 && r.RewardShare == rewardShare && r.LoanAmount.Cmp(loan) == 0
 }
+
+// newStakeConfirmation is fee::new_stake_confirmation in the contract: request_loan refuses unless
+// the collateral plus the loan reaches min_stake plus this.
+var newStakeConfirmation = big.NewInt(1000000000) // 1 GRAM
+
+// CollateralFor is what the request must leave the treasury holding as stake_amount: RequestValue
+// without the fee.
+func CollateralFor(maxPunishment, minPayment, stake *big.Int, borrowerFee uint16) *big.Int {
+	return RequestValue(maxPunishment, big.NewInt(0), minPayment, stake, borrowerFee)
+}
+
+// PunishmentFunc reads the maximum punishment for a stake: get_max_punishment on the treasury.
+type PunishmentFunc func(stake *big.Int) *big.Int
+
+// SizeRequest works out the collateral a request needs. request_loan checks the punishment on
+// loan + collateral, not on the loan alone, and the collateral itself includes the punishment, so a
+// punishment that grows with the stake is read a second time on the stake it would actually check.
+// Punishment is a flat fine today, which makes the second read a no-op.
+func SizeRequest(loan, minPayment, stake *big.Int, borrowerFee uint16, punishment PunishmentFunc) (
+	collateral, maxPunishment *big.Int) {
+	maxPunishment = punishment(loan)
+	collateral = CollateralFor(maxPunishment, minPayment, stake, borrowerFee)
+	if p := punishment(new(big.Int).Add(loan, collateral)); p.Cmp(maxPunishment) > 0 {
+		maxPunishment = p
+		collateral = CollateralFor(maxPunishment, minPayment, stake, borrowerFee)
+	}
+	return collateral, maxPunishment
+}
+
+// CoversMinStake reports whether request_loan's stake_amount + loan_amount >= min_stake +
+// fee::new_stake_confirmation holds for this collateral.
+func CoversMinStake(collateral, loan, minStake *big.Int) bool {
+	have := new(big.Int).Add(collateral, loan)
+	return have.Cmp(new(big.Int).Add(minStake, newStakeConfirmation)) >= 0
+}
+
+// SendValue is what to attach to request_loan. The treasury keeps incoming - fee + the collateral
+// already posted by a request it replaces, so a replacement only sends the fee and whatever the
+// posted collateral falls short of; a new request sends the whole collateral.
+func SendValue(collateral, requestLoanFee, posted *big.Int) *big.Int {
+	value := new(big.Int).Set(requestLoanFee)
+	short := new(big.Int).Sub(collateral, posted)
+	if short.Sign() > 0 {
+		value.Add(value, short)
+	}
+	return value
+}

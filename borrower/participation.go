@@ -65,7 +65,7 @@ func LoadParticipation(c *cell.Cell) Participation {
 	return Participation{
 		State:           ParticipationState(s.MustLoadUInt(4)),
 		Size:            uint16(s.MustLoadUInt(16)),
-		Sorted:          s.MustLoadDict(112),
+		Sorted:          s.MustLoadDict(120), // request_sort_key is 120 bits
 		Requests:        s.MustLoadDict(256),
 		Rejected:        s.MustLoadDict(256),
 		Accepted:        s.MustLoadDict(256),
