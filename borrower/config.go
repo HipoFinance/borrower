@@ -24,6 +24,7 @@ type Borrow struct {
 	Stake          string
 	Loan           string
 	MinPayment     string  `yaml:"min_payment"`
+	MaxStake       string  `yaml:"max_stake"`
 	MaxFactorRatio float32 `yaml:"max_factor_ratio"`
 
 	// There is no reward share here. The treasury sets one for every loan and refuses a request that

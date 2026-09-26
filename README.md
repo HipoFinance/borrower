@@ -28,13 +28,16 @@ price a request instead of guessing. The authoritative source is `decide_loan_re
 
 #### What you bid
 
-A request carries two numbers you choose:
+A request carries three numbers you choose:
 
 - **`loan`**: how much GRAM you want to borrow. Together with your own `stake` it must reach the
   network's `min_stake` (config 17), though in practice the smallest stake the elector actually
   elects is much higher than that, and a stake below it earns nothing.
 - **`min_payment`**: what you promise the pool for the loan. It is best read as a **rate**: see
   *Pricing a bid* below.
+- **`max_stake`**: the most your loan will stake in total -- `loan`, plus whatever leftover the
+  treasury adds to it, plus your collateral (your own `stake` included) -- or 0 for no cap. See
+  *Capping your stake* below.
 
 The **reward share** is not part of the bid. The treasury sets one value for every loan
 (`reward_share`, out of 65535, index 26 of `get_treasury_state`), and a request that tries to name
@@ -83,8 +86,9 @@ burner).
   One consequence to price for: the elector pays nothing on stake above its cap (`max_factor` times
   the smallest elected stake), but the treasury scales `min_payment` on everything it lends you. A
   loan that ends up taking most of the pool -- because it is the only one accepted -- can pass that
-  cap, and then even a `min_payment` at the pool's contractual share binds. If the pool is larger than
-  the cap, keep `min_payment` below `cap / pool` of the break-even figure below.
+  cap, and then even a `min_payment` at the pool's contractual share binds. Set `max_stake` to stop
+  that (below); without it, if the pool is larger than the cap, keep `min_payment` below
+  `cap / pool` of the break-even figure below.
 
 A worked example with the figures of September 2026: a stake earned about **660 GRAM per 1,000,000
 staked** per round, and `reward_share` was 1799, so the pool's contractual share was 97.25% of the
@@ -95,6 +99,25 @@ money, below it the promise is only a ranking signal. The borrower logs this rat
 `GRAM per 1,000,000 lent` with every request. Rewards move from round to round (between about 644
 and 689 per million over the same period), so a bid priced exactly at break-even loses money in a
 round that pays less.
+
+#### Capping your stake
+
+`max_stake` bounds everything your validator stakes: `loan` + accrued + collateral, where collateral
+is everything the request leaves with the treasury, your own `stake` included. The treasury stops
+adding leftover to your loan at that total, and what it does not add stays in the treasury -- it is
+not given to the other borrowers. Set it to the cap you expect the elector to apply to you, about
+`max_factor` times the smallest stake it will elect, and you are never lent stake that earns nothing
+while `min_payment` is charged on it. With a cap you can price `min_payment` on the loan you
+request again. 0 means no cap.
+
+The treasury refuses a `max_stake` below `loan` + collateral, so the borrower checks that before it
+sends and says so instead. A changed `max_stake` counts as a changed bid and is re-sent.
+
+`max_stake` exists from the treasury's stake-cap release on, which made it a **required** field of
+`request_loan`; the code before that release refuses a request that carries it. The borrower reads
+the treasury's code hash and sends the field only once the treasury has the release, so this
+version works on both sides of the upgrade. **Borrower v2.0.0 and earlier cannot bid after that
+upgrade**: the treasury bounces their requests (the collateral comes back) until you update.
 
 #### Collateral, and a loan that is not elected
 

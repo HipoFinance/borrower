@@ -1,6 +1,7 @@
 package borrower
 
 import (
+	"encoding/hex"
 	"math/big"
 
 	"github.com/xssnick/tonutils-go/tvm/cell"
@@ -17,20 +18,28 @@ type Request struct {
 	// the round reward. The treasury snapshots it here rather than reading it at recovery, so a
 	// governance change cannot reprice a loan that is already committed.
 	BorrowerFee uint16
+	// The borrower's cap on loan + accrue + collateral, 0 for none. Requests stored before the
+	// treasury's stake-cap release end without it and read as 0, as the treasury reads them.
+	MaxStake    *big.Int
 	NewStakeMsg *cell.Cell
 }
 
 func LoadRequest(c *cell.Cell) Request {
 	s := c.MustBeginParse()
-	return Request{
+	r := Request{
 		MinPayment:   s.MustLoadBigCoins(),
 		RewardShare:  uint16(s.MustLoadUInt(16)),
 		LoanAmount:   s.MustLoadBigCoins(),
 		AccrueAmount: s.MustLoadBigCoins(),
 		StakeAmount:  s.MustLoadBigCoins(),
 		BorrowerFee:  uint16(s.MustLoadUInt(16)),
-		NewStakeMsg:  s.MustLoadRef().MustToCell(),
+		MaxStake:     big.NewInt(0),
 	}
+	if s.BitsLeft() > 0 {
+		r.MaxStake = s.MustLoadBigCoins()
+	}
+	r.NewStakeMsg = s.MustLoadRef().MustToCell()
+	return r
 }
 
 // OpRequestLoan is op::request_loan in the contract's contracts/imports/constants.fc.
@@ -57,23 +66,52 @@ func RequestValue(maxPunishment, requestLoanFee, minPayment, stake *big.Int, bor
 
 // RequestBody builds the request_loan body. It carries no reward share: the treasury sets one for
 // every loan, and its end_parse refuses a body that still has 16 bits of share before the ref.
-func RequestBody(queryID uint64, roundSince uint32, loan, minPayment *big.Int, newStakeMsg *cell.Cell) *cell.Cell {
-	return cell.BeginCell().
+//
+// maxStake is the field the treasury's stake-cap release requires after min_payment, 0 for no cap.
+// Pass nil for a treasury older than that release, which refuses a body carrying it; see
+// TakesMaxStake.
+func RequestBody(queryID uint64, roundSince uint32, loan, minPayment, maxStake *big.Int,
+	newStakeMsg *cell.Cell) *cell.Cell {
+	b := cell.BeginCell().
 		MustStoreUInt(OpRequestLoan, 32).
 		MustStoreUInt(queryID, 64).
 		MustStoreUInt(uint64(roundSince), 32).
 		MustStoreBigCoins(loan).
-		MustStoreBigCoins(minPayment).
-		MustStoreRef(newStakeMsg).
-		EndCell()
+		MustStoreBigCoins(minPayment)
+	if maxStake != nil {
+		b.MustStoreBigCoins(maxStake)
+	}
+	return b.MustStoreRef(newStakeMsg).EndCell()
+}
+
+// preCapTreasuryCodeHashes are the treasury codes before the stake-cap release, which refuse a
+// request_loan that carries max_stake: the reward-share release and the accrual-pricing release.
+// Every code after them requires it. A treasury older than both is refused elsewhere, for having no
+// protocol-set reward share.
+var preCapTreasuryCodeHashes = map[string]bool{
+	"6cd64455cf733d84a56da540b1ad757e966bdbe8146fe32d52c01efc038a8c6c": true,
+	"f003de4b9ab34a61dd7d70a0a68a5faaf6ac0a8821ff2d720f9fecf8dd71475d": true,
+}
+
+// TakesMaxStake reports whether a treasury running this code expects max_stake in request_loan.
+func TakesMaxStake(codeHash []byte) bool {
+	return !preCapTreasuryCodeHashes[hex.EncodeToString(codeHash)]
+}
+
+// CapFits reports whether a max_stake is one the treasury accepts for this request: 0 for no cap, or
+// at least loan + collateral, where collateral is everything the request leaves staked -- own stake
+// included. A lower cap is refused and bounced.
+func CapFits(maxStake, loan, collateral *big.Int) bool {
+	return maxStake.Sign() == 0 || maxStake.Cmp(new(big.Int).Add(loan, collateral)) >= 0
 }
 
 // Unchanged reports whether a request already standing in the treasury is the one this borrower
 // would send, so that it is not replaced -- each replacement costs another request fee. The share is
 // compared too: a request keeps the share it was made under, so one made before the governor changed
-// it is re-sent to carry the current value.
-func (r Request) Unchanged(loan, minPayment *big.Int, rewardShare uint16) bool {
-	return r.MinPayment.Cmp(minPayment) == 0 && r.RewardShare == rewardShare && r.LoanAmount.Cmp(loan) == 0
+// it is re-sent to carry the current value. So is the cap; pass 0 for a treasury that takes none.
+func (r Request) Unchanged(loan, minPayment *big.Int, rewardShare uint16, maxStake *big.Int) bool {
+	return r.MinPayment.Cmp(minPayment) == 0 && r.RewardShare == rewardShare && r.LoanAmount.Cmp(loan) == 0 &&
+		r.MaxStake.Cmp(maxStake) == 0
 }
 
 // newStakeConfirmation is fee::new_stake_confirmation in the contract: request_loan refuses unless

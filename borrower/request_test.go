@@ -1,6 +1,7 @@
 package borrower
 
 import (
+	"encoding/hex"
 	"math/big"
 	"testing"
 
@@ -50,12 +51,25 @@ func TestRequestValueAddsOwnStakeAndLeavesItsInputsAlone(t *testing.T) {
 }
 
 // Parsed the way the treasury parses it: op, query_id, round_since, loan_amount, min_payment, then
-// nothing but the new_stake_msg ref, or end_parse throws.
+// max_stake on a treasury that takes it, then nothing but the new_stake_msg ref, or end_parse throws.
 func TestRequestBodyMatchesWhatTheTreasuryParses(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		maxStake *big.Int
+	}{
+		{"before the stake cap", nil},
+		{"no cap", big.NewInt(0)},
+		{"capped", gram(t, "3000000")},
+	} {
+		t.Run(tc.name, func(t *testing.T) { checkRequestBody(t, tc.maxStake) })
+	}
+}
+
+func checkRequestBody(t *testing.T, maxStake *big.Int) {
 	newStakeMsg := cell.BeginCell().MustStoreUInt(7, 8).EndCell()
 	loan, minPayment := gram(t, "1000000"), gram(t, "651")
 
-	body := RequestBody(42, 1790000000, loan, minPayment, newStakeMsg)
+	body := RequestBody(42, 1790000000, loan, minPayment, maxStake, newStakeMsg)
 	s := body.MustBeginParse()
 	if op := s.MustLoadUInt(32); op != OpRequestLoan {
 		t.Fatalf("op = %x", op)
@@ -72,6 +86,11 @@ func TestRequestBodyMatchesWhatTheTreasuryParses(t *testing.T) {
 	if m := s.MustLoadBigCoins(); m.Cmp(minPayment) != 0 {
 		t.Errorf("min_payment = %v", m)
 	}
+	if maxStake != nil {
+		if c := s.MustLoadBigCoins(); c.Cmp(maxStake) != 0 {
+			t.Errorf("max_stake = %v", c)
+		}
+	}
 	if s.BitsLeft() != 0 {
 		t.Errorf("%v bits left before the ref; the treasury's end_parse would refuse this", s.BitsLeft())
 	}
@@ -84,18 +103,69 @@ func TestRequestBodyMatchesWhatTheTreasuryParses(t *testing.T) {
 }
 
 func TestUnchangedComparesEveryBidField(t *testing.T) {
-	r := Request{MinPayment: gram(t, "651"), RewardShare: 1799, LoanAmount: gram(t, "1000000")}
-	if !r.Unchanged(gram(t, "1000000"), gram(t, "651"), 1799) {
+	r := Request{MinPayment: gram(t, "651"), RewardShare: 1799, LoanAmount: gram(t, "1000000"),
+		MaxStake: gram(t, "3000000")}
+	if !r.Unchanged(gram(t, "1000000"), gram(t, "651"), 1799, gram(t, "3000000")) {
 		t.Error("an identical request should count as unchanged")
 	}
-	if r.Unchanged(gram(t, "1000000"), gram(t, "652"), 1799) {
+	if r.Unchanged(gram(t, "1000000"), gram(t, "652"), 1799, gram(t, "3000000")) {
 		t.Error("a different min_payment should be re-sent")
 	}
-	if r.Unchanged(gram(t, "999999"), gram(t, "651"), 1799) {
+	if r.Unchanged(gram(t, "999999"), gram(t, "651"), 1799, gram(t, "3000000")) {
 		t.Error("a different loan should be re-sent")
 	}
-	if r.Unchanged(gram(t, "1000000"), gram(t, "651"), 2000) {
+	if r.Unchanged(gram(t, "1000000"), gram(t, "651"), 2000, gram(t, "3000000")) {
 		t.Error("a different share should be re-sent")
+	}
+	if r.Unchanged(gram(t, "1000000"), gram(t, "651"), 1799, big.NewInt(0)) {
+		t.Error("a different cap should be re-sent")
+	}
+}
+
+// A request cell exactly as the treasury's pack_request builds it, before and after the stake cap.
+func TestLoadRequestReadsTheCapOnlyWhenStored(t *testing.T) {
+	build := func(maxStake *big.Int) *cell.Cell {
+		b := cell.BeginCell().MustStoreBigCoins(gram(t, "651")).MustStoreUInt(1799, 16).
+			MustStoreBigCoins(gram(t, "1000000")).MustStoreBigCoins(gram(t, "5")).
+			MustStoreBigCoins(gram(t, "753")).MustStoreUInt(32767, 16)
+		if maxStake != nil {
+			b.MustStoreBigCoins(maxStake)
+		}
+		return b.MustStoreRef(cell.BeginCell().EndCell()).EndCell()
+	}
+	old := LoadRequest(build(nil))
+	if old.MaxStake.Sign() != 0 || old.BorrowerFee != 32767 || old.StakeAmount.Cmp(gram(t, "753")) != 0 {
+		t.Errorf("a request stored before the cap misread: %+v", old)
+	}
+	capped := LoadRequest(build(gram(t, "3000000")))
+	if capped.MaxStake.Cmp(gram(t, "3000000")) != 0 || capped.BorrowerFee != 32767 {
+		t.Errorf("a capped request misread: %+v", capped)
+	}
+}
+
+func TestTakesMaxStakeOnlyAfterTheStakeCapRelease(t *testing.T) {
+	for h, takes := range map[string]bool{
+		"6cd64455cf733d84a56da540b1ad757e966bdbe8146fe32d52c01efc038a8c6c": false, // reward share
+		"f003de4b9ab34a61dd7d70a0a68a5faaf6ac0a8821ff2d720f9fecf8dd71475d": false, // accrual pricing
+		"54d84afcf4201d5db915cf4cbc16a74f7d50df1ea71aa7e259e2b0fb9e134e59": true,  // stake cap
+	} {
+		b, _ := hex.DecodeString(h)
+		if TakesMaxStake(b) != takes {
+			t.Errorf("TakesMaxStake(%v...) = %v", h[:8], !takes)
+		}
+	}
+}
+
+func TestCapFitsWhatTheTreasuryAccepts(t *testing.T) {
+	loan, collateral := gram(t, "300000"), gram(t, "500501") // own stake included
+	if !CapFits(big.NewInt(0), loan, collateral) {
+		t.Error("0 is no cap and always fits")
+	}
+	if !CapFits(gram(t, "800501"), loan, collateral) {
+		t.Error("a cap equal to loan + collateral fits")
+	}
+	if CapFits(gram(t, "800500"), loan, collateral) {
+		t.Error("a cap below loan + collateral is refused by the treasury")
 	}
 }
 

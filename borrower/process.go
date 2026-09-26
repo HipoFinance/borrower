@@ -254,7 +254,19 @@ func RequestLoan() (wait time.Duration) {
 
 	loanAddress := loadLoanAddress(validatorAddress, treasuryAddress, nextRoundSince, api, ctx, mainchainInfo)
 
-	stake, loan, minPayment, maxFactor := loadBorrowConfig(config.Borrow, minStake, maxStakeFactor)
+	stake, loan, minPayment, maxStake, maxFactor := loadBorrowConfig(config.Borrow, minStake, maxStakeFactor)
+
+	// The stake-cap release made max_stake a required field of request_loan, and the code before it
+	// refuses a body that carries it, so the body follows the treasury's code. sendCap is nil when
+	// the field must not be sent; heldCap is what a standing request made under this code carries.
+	var sendCap *big.Int
+	heldCap := big.NewInt(0)
+	if TakesMaxStake(treasuryCodeHash(api, ctx, mainchainInfo, treasuryAddress)) {
+		sendCap, heldCap = maxStake, maxStake
+	} else if maxStake.Sign() > 0 {
+		log.Printf("   ℹ️  borrow.max_stake is set, but this treasury predates the stake cap and refuses it; " +
+			"requesting without a cap until it is upgraded")
+	}
 
 	requestLoanFee := getRequestLoanFee(api, ctx, mainchainInfo, treasuryAddress)
 
@@ -282,7 +294,7 @@ func RequestLoan() (wait time.Duration) {
 	standing := loadStandingRequest(participation, validatorKey)
 	// A standing request is kept only while it is the bid this config makes AND its collateral still
 	// covers what the treasury checks: a higher punishment or more own stake needs a top-up.
-	if standing != nil && standing.Unchanged(loan, minPayment, rewardShare) &&
+	if standing != nil && standing.Unchanged(loan, minPayment, rewardShare, heldCap) &&
 		standing.StakeAmount.Cmp(collateral) >= 0 {
 		if sent.round == nextRoundSince {
 			log.Printf("   ✔️  The request sent for round %v is standing", formattedNextRoundSince)
@@ -308,8 +320,8 @@ func RequestLoan() (wait time.Duration) {
 		log.Printf("   ❌ The request sent for round %v is not standing: the treasury refused it or it never "+
 			"left the wallet. Sending again (%v of %v)", formattedNextRoundSince, sent.attempts+1, maxSends)
 	} else if standing != nil {
-		log.Printf("   ✏️  Updating last request to min_payment: %v, reward_share: %v, loan: %v",
-			minPayment, rewardShare, loan)
+		log.Printf("   ✏️  Updating last request to min_payment: %v, reward_share: %v, loan: %v, max_stake: %v",
+			minPayment, rewardShare, loan, heldCap)
 	}
 
 	participateSince := getParticipateSince(api, ctx, mainchainInfo, treasuryAddress)
@@ -327,6 +339,17 @@ func RequestLoan() (wait time.Duration) {
 	}
 	value := SendValue(collateral, requestLoanFee, posted)
 
+	// What the treasury will hold as stake_amount after this send: a replacement only tops up.
+	staked := collateral
+	if posted.Cmp(staked) > 0 {
+		staked = posted
+	}
+	if sendCap != nil && !CapFits(sendCap, loan, staked) {
+		return notSending(0, "⚠️ ", fmt.Sprintf("borrow.max_stake of %v GRAM is below the loan plus collateral "+
+			"of %v GRAM; the treasury would refuse it. Raise it, or set it to 0 for no cap",
+			tlb.FromNanoTON(sendCap).String(), tlb.FromNanoTON(new(big.Int).Add(loan, staked)).String()))
+	}
+
 	// The value, and the wallet's own fees for sending it on top. The wallet sends with
 	// pay-gas-separately and ignore-errors, so a balance that covers the value but not the fees drops
 	// the message while the wallet's transaction still confirms.
@@ -342,6 +365,7 @@ func RequestLoan() (wait time.Duration) {
 			"for validation round %v", tlb.FromNanoTON(loan).String(), tlb.FromNanoTON(minPayment).String(),
 			tlb.FromNanoTON(value).String(), formattedNextRoundSince)
 		log.Printf("   🧪 Bid: %v", BidRate(minPayment, loan))
+		log.Printf("   🧪 %v", describeCap(sendCap))
 		log.Printf("   🧪 Stopping before the validator engine is configured or the wallet sends anything")
 		return
 	}
@@ -357,6 +381,7 @@ func RequestLoan() (wait time.Duration) {
 	// lends the loan, leftover included, so the rate is what this bid promises -- see "Pricing a bid"
 	// in the README.
 	log.Printf("   🏷  Bid: %v", BidRate(minPayment, loan))
+	log.Printf("   🧢 %v", describeCap(sendCap))
 
 	confirmation := buildStakeConfirmation(nextRoundSince, maxFactor, loanAddress, adnlAddressBigInt)
 
@@ -364,7 +389,7 @@ func RequestLoan() (wait time.Duration) {
 
 	newStakeMsg := buildNewStakeMsg(publicKey, nextRoundSince, maxFactor, adnlAddressBigInt, signature)
 
-	payload := RequestBody(uint64(time.Now().Unix()), nextRoundSince, loan, minPayment, newStakeMsg)
+	payload := RequestBody(uint64(time.Now().Unix()), nextRoundSince, loan, minPayment, sendCap, newStakeMsg)
 
 	message := wallet.SimpleMessage(treasuryAddress, tlb.FromNanoTON(value), payload)
 
@@ -430,6 +455,34 @@ func treasuryLastLT(api ton.APIClientWrapped, ctx context.Context, mainchainInfo
 		panic(fmt.Sprintf("Error in getting treasury account: %v", err))
 	}
 	return account.LastTxLT
+}
+
+// describeCap says what the request carries for max_stake.
+func describeCap(sendCap *big.Int) string {
+	switch {
+	case sendCap == nil:
+		return "max_stake: not sent (the treasury predates the stake cap)"
+	case sendCap.Sign() == 0:
+		return "max_stake: 0 (no cap: the treasury may lend this loan any share of its leftover)"
+	default:
+		return fmt.Sprintf("max_stake: %v GRAM (loan + accrue + collateral, own stake included)",
+			tlb.FromNanoTON(sendCap).String())
+	}
+}
+
+// treasuryCodeHash is the hash of the code the treasury runs in this view of the chain.
+func treasuryCodeHash(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
+	treasuryAddress *address.Address) []byte {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	account, err := api.GetAccount(ctx, mainchainInfo, treasuryAddress)
+	if err != nil {
+		panic(fmt.Sprintf("Error in getting treasury account: %v", err))
+	}
+	if account.Code == nil {
+		panic("Error, the treasury account has no code")
+	}
+	return account.Code.Hash()
 }
 
 // walletHeadroom is what the wallet must hold beyond the value it attaches, for its own fees.
@@ -796,7 +849,7 @@ func loadParticipation(participations *cell.Dictionary, nextRoundSince uint32) *
 }
 
 func loadBorrowConfig(config Borrow, minStake *big.Int, maxStakeFactor uint32) (
-	*big.Int, *big.Int, *big.Int, uint32) {
+	*big.Int, *big.Int, *big.Int, *big.Int, uint32) {
 	stake, err := tlb.FromTON(config.Stake)
 	if err != nil {
 		panic("Error, invalid stake amount")
@@ -815,6 +868,16 @@ func loadBorrowConfig(config Borrow, minStake *big.Int, maxStakeFactor uint32) (
 		panic("Error, invalid min payment")
 	}
 
+	// Absent from a config written before the stake cap: no cap, which is what 0 means on the wire.
+	maxStake := big.NewInt(0)
+	if config.MaxStake != "" {
+		c, err := tlb.FromTON(config.MaxStake)
+		if err != nil {
+			panic("Error, invalid max stake")
+		}
+		maxStake = c.Nano()
+	}
+
 	// Resolved here, and here only: maxFactor goes into both the confirmation cell the validator
 	// engine signs and the new_stake_msg the elector reads, and the elector checks the signature
 	// over the first against the second. Anything that adjusts the value downstream of the signing
@@ -824,7 +887,7 @@ func loadBorrowConfig(config Borrow, minStake *big.Int, maxStakeFactor uint32) (
 		log.Printf("   %v", maxFactorNote)
 	}
 
-	return stake.Nano(), loan.Nano(), minPayment.Nano(), maxFactor
+	return stake.Nano(), loan.Nano(), minPayment.Nano(), maxStake, maxFactor
 }
 
 // buildStakeConfirmation and buildNewStakeMsg both carry max_factor, and the elector verifies the
