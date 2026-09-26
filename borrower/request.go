@@ -99,10 +99,11 @@ func TakesMaxStake(codeHash []byte) bool {
 }
 
 // CapFits reports whether a max_stake is one the treasury accepts for this request: 0 for no cap, or
-// at least loan + collateral, where collateral is everything the request leaves staked -- own stake
-// included. A lower cap is refused and bounced.
-func CapFits(maxStake, loan, collateral *big.Int) bool {
-	return maxStake.Sign() == 0 || maxStake.Cmp(new(big.Int).Add(loan, collateral)) >= 0
+// at least loan + stake_amount, which it refuses below. held must be an upper bound on that
+// stake_amount -- the collateral the request leaves posted plus the fee attached, because the fee is
+// attached with slack and what the treasury does not charge of it stays as stake too.
+func CapFits(maxStake, loan, held *big.Int) bool {
+	return maxStake.Sign() == 0 || maxStake.Cmp(new(big.Int).Add(loan, held)) >= 0
 }
 
 // Unchanged reports whether a request already standing in the treasury is the one this borrower

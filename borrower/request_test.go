@@ -156,16 +156,23 @@ func TestTakesMaxStakeOnlyAfterTheStakeCapRelease(t *testing.T) {
 	}
 }
 
+// The treasury keeps value - fee as stake_amount, and the value carries the fee with slack, so the
+// collateral alone understates what it checks the cap against. held adds the fee attached.
 func TestCapFitsWhatTheTreasuryAccepts(t *testing.T) {
-	loan, collateral := gram(t, "300000"), gram(t, "500501") // own stake included
-	if !CapFits(big.NewInt(0), loan, collateral) {
+	loan, collateral, fee := gram(t, "300000"), gram(t, "500501"), gram(t, "0.8") // own stake included
+	held := new(big.Int).Add(collateral, fee)
+	stakeAmount := new(big.Int).Add(collateral, gram(t, "0.072")) // what the unused slack leaves
+	if !CapFits(big.NewInt(0), loan, held) {
 		t.Error("0 is no cap and always fits")
 	}
-	if !CapFits(gram(t, "800501"), loan, collateral) {
-		t.Error("a cap equal to loan + collateral fits")
+	if !CapFits(gram(t, "800501.8"), loan, held) {
+		t.Error("a cap equal to loan + collateral + fee fits")
 	}
-	if CapFits(gram(t, "800500"), loan, collateral) {
-		t.Error("a cap below loan + collateral is refused by the treasury")
+	if CapFits(new(big.Int).Add(loan, collateral), loan, held) {
+		t.Error("loan + collateral alone is below loan + stake_amount; the treasury would refuse it")
+	}
+	if new(big.Int).Add(loan, collateral).Cmp(new(big.Int).Add(loan, stakeAmount)) >= 0 {
+		t.Error("the scenario above must be one the treasury refuses")
 	}
 }
 

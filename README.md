@@ -110,8 +110,9 @@ not given to the other borrowers. Set it to the cap you expect the elector to ap
 while `min_payment` is charged on it. With a cap you can price `min_payment` on the loan you
 request again. 0 means no cap.
 
-The treasury refuses a `max_stake` below `loan` + collateral, so the borrower checks that before it
-sends and says so instead. A changed `max_stake` counts as a changed bid and is re-sent.
+The treasury refuses a `max_stake` below `loan` + collateral, where the collateral includes whatever
+part of the request fee it does not charge, so the borrower checks the cap against `loan` +
+collateral + the request fee before it sends, and says so instead. A changed `max_stake` counts as a changed bid and is re-sent.
 
 `max_stake` exists from the treasury's stake-cap release on, which made it a **required** field of
 `request_loan`; the code before that release refuses a request that carries it. The borrower reads

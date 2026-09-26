@@ -344,10 +344,11 @@ func RequestLoan() (wait time.Duration) {
 	if posted.Cmp(staked) > 0 {
 		staked = posted
 	}
-	if sendCap != nil && !CapFits(sendCap, loan, staked) {
-		return notSending(0, "⚠️ ", fmt.Sprintf("borrow.max_stake of %v GRAM is below the loan plus collateral "+
-			"of %v GRAM; the treasury would refuse it. Raise it, or set it to 0 for no cap",
-			tlb.FromNanoTON(sendCap).String(), tlb.FromNanoTON(new(big.Int).Add(loan, staked)).String()))
+	held := new(big.Int).Add(staked, requestLoanFee)
+	if sendCap != nil && !CapFits(sendCap, loan, held) {
+		return notSending(0, "⚠️ ", fmt.Sprintf("borrow.max_stake of %v GRAM is below the loan, the collateral "+
+			"and the request fee, %v GRAM; the treasury could refuse it. Raise it, or set it to 0 for no cap",
+			tlb.FromNanoTON(sendCap).String(), tlb.FromNanoTON(new(big.Int).Add(loan, held)).String()))
 	}
 
 	// The value, and the wallet's own fees for sending it on top. The wallet sends with
