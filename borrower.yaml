@@ -16,9 +16,9 @@ borrow:
     loan: "0" # GRAM amount
 
     # What you promise the pool for this loan, as an amount for `loan`. It is best read as a RATE: the
-    # treasury ranks bids on min_payment / loan, and from its accrual-pricing release on (announced
-    # 2026-09-23, not before 2026-09-26) it scales min_payment when it adds leftover to your loan, so you
-    # pay the same rate on everything it lends you. The pool
+    # treasury ranks bids on min_payment / loan, and since its accrual-pricing release (2026-09-26) it
+    # scales min_payment when it adds leftover to your loan, so you pay the same rate on everything it
+    # lends you. The pool
     # receives the larger of this and its contractual share of the reward, so a min_payment below that
     # share costs you nothing extra and only sets your rank. See "Pricing a bid" in the README.
     min_payment: "0" # GRAM amount

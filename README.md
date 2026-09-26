@@ -77,8 +77,8 @@ burner).
   way: a bid priced on leftover you *expect* to receive, but divided by a smaller `loan`, pays that
   same inflated rate on the leftover too.
 
-  This applies from treasury code `f003de4b…`, announced on 23 September 2026 and deployed no
-  earlier than 26 September 2026. Before it, `min_payment` was not scaled.
+  This applies from treasury code `f003de4b…`, deployed on 26 September 2026. Before it,
+  `min_payment` was not scaled.
 
   One consequence to price for: the elector pays nothing on stake above its cap (`max_factor` times
   the smallest elected stake), but the treasury scales `min_payment` on everything it lends you. A
@@ -139,8 +139,7 @@ Rent a server that has the [minimum hardware requirements](https://docs.ton.org/
       ~/go/bin/borrower -version
       ```
 
-      For a root user that path is `/root/go/bin`. The first release is published once the accrual
-      pricing treasury is live; until then, build from source.
+      For a root user that path is `/root/go/bin`.
 
     - or build from source: install Go 1.26 or later (`snap install go --classic`), then run
       `make install` (or `go install`) in a clone of this repository.
