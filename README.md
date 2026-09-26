@@ -112,13 +112,13 @@ request again. 0 means no cap.
 
 The treasury refuses a `max_stake` below `loan` + collateral, where the collateral includes whatever
 part of the request fee it does not charge, so the borrower checks the cap against `loan` +
-collateral + the request fee before it sends, and says so instead. A changed `max_stake` counts as a changed bid and is re-sent.
+collateral + the request fee before it sends, and says so instead. A changed `max_stake` counts as a
+changed bid and is re-sent.
 
-`max_stake` exists from the treasury's stake-cap release on, which made it a **required** field of
-`request_loan`; the code before that release refuses a request that carries it. The borrower reads
-the treasury's code hash and sends the field only once the treasury has the release, so this
-version works on both sides of the upgrade. **Borrower v2.0.0 and earlier cannot bid after that
-upgrade**: the treasury bounces their requests (the collateral comes back) until you update.
+`max_stake` is a **required** field of `request_loan` since the treasury's stake-cap release (code
+`54d84afc…`, deployed on 26 September 2026). **Borrower v2.0.0 and earlier cannot bid since then**:
+the treasury bounces their requests (the collateral comes back) until you update. v2.1.x switched
+on the treasury's code hash across the upgrade; from v2.2.0 the field is always sent.
 
 #### Collateral, and a loan that is not elected
 

@@ -1,7 +1,6 @@
 package borrower
 
 import (
-	"encoding/hex"
 	"math/big"
 	"testing"
 
@@ -50,14 +49,13 @@ func TestRequestValueAddsOwnStakeAndLeavesItsInputsAlone(t *testing.T) {
 	}
 }
 
-// Parsed the way the treasury parses it: op, query_id, round_since, loan_amount, min_payment, then
-// max_stake on a treasury that takes it, then nothing but the new_stake_msg ref, or end_parse throws.
+// Parsed the way the treasury parses it: op, query_id, round_since, loan_amount, min_payment,
+// max_stake, then nothing but the new_stake_msg ref, or end_parse throws.
 func TestRequestBodyMatchesWhatTheTreasuryParses(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		maxStake *big.Int
 	}{
-		{"before the stake cap", nil},
 		{"no cap", big.NewInt(0)},
 		{"capped", gram(t, "3000000")},
 	} {
@@ -86,10 +84,8 @@ func checkRequestBody(t *testing.T, maxStake *big.Int) {
 	if m := s.MustLoadBigCoins(); m.Cmp(minPayment) != 0 {
 		t.Errorf("min_payment = %v", m)
 	}
-	if maxStake != nil {
-		if c := s.MustLoadBigCoins(); c.Cmp(maxStake) != 0 {
-			t.Errorf("max_stake = %v", c)
-		}
+	if c := s.MustLoadBigCoins(); c.Cmp(maxStake) != 0 {
+		t.Errorf("max_stake = %v", c)
 	}
 	if s.BitsLeft() != 0 {
 		t.Errorf("%v bits left before the ref; the treasury's end_parse would refuse this", s.BitsLeft())
@@ -122,42 +118,18 @@ func TestUnchangedComparesEveryBidField(t *testing.T) {
 	}
 }
 
-// A request cell exactly as the treasury's pack_request builds it, before and after the stake cap.
-func TestLoadRequestReadsTheCapOnlyWhenStored(t *testing.T) {
-	build := func(maxStake *big.Int) *cell.Cell {
-		b := cell.BeginCell().MustStoreBigCoins(gram(t, "651")).MustStoreUInt(1799, 16).
-			MustStoreBigCoins(gram(t, "1000000")).MustStoreBigCoins(gram(t, "5")).
-			MustStoreBigCoins(gram(t, "753")).MustStoreUInt(32767, 16)
-		if maxStake != nil {
-			b.MustStoreBigCoins(maxStake)
-		}
-		return b.MustStoreRef(cell.BeginCell().EndCell()).EndCell()
-	}
-	old := LoadRequest(build(nil))
-	if old.MaxStake.Sign() != 0 || old.BorrowerFee != 32767 || old.StakeAmount.Cmp(gram(t, "753")) != 0 {
-		t.Errorf("a request stored before the cap misread: %+v", old)
-	}
-	capped := LoadRequest(build(gram(t, "3000000")))
+// A request cell exactly as the treasury's pack_request builds it. This borrower reads only the open
+// round's requests, all stored since the stake-cap release, so the field is always there.
+func TestLoadRequestReadsTheCap(t *testing.T) {
+	capped := LoadRequest(cell.BeginCell().MustStoreBigCoins(gram(t, "651")).MustStoreUInt(1799, 16).
+		MustStoreBigCoins(gram(t, "1000000")).MustStoreBigCoins(gram(t, "5")).
+		MustStoreBigCoins(gram(t, "753")).MustStoreUInt(32767, 16).MustStoreBigCoins(gram(t, "3000000")).
+		MustStoreRef(cell.BeginCell().EndCell()).EndCell())
 	if capped.MaxStake.Cmp(gram(t, "3000000")) != 0 || capped.BorrowerFee != 32767 {
 		t.Errorf("a capped request misread: %+v", capped)
 	}
 }
 
-func TestTakesMaxStakeOnlyAfterTheStakeCapRelease(t *testing.T) {
-	for h, takes := range map[string]bool{
-		"6cd64455cf733d84a56da540b1ad757e966bdbe8146fe32d52c01efc038a8c6c": false, // reward share
-		"f003de4b9ab34a61dd7d70a0a68a5faaf6ac0a8821ff2d720f9fecf8dd71475d": false, // accrual pricing
-		"54d84afcf4201d5db915cf4cbc16a74f7d50df1ea71aa7e259e2b0fb9e134e59": true,  // stake cap
-	} {
-		b, _ := hex.DecodeString(h)
-		if TakesMaxStake(b) != takes {
-			t.Errorf("TakesMaxStake(%v...) = %v", h[:8], !takes)
-		}
-	}
-}
-
-// The treasury keeps value - fee as stake_amount, and the value carries the fee with slack, so the
-// collateral alone understates what it checks the cap against. held adds the fee attached.
 func TestCapFitsWhatTheTreasuryAccepts(t *testing.T) {
 	loan, collateral, fee := gram(t, "300000"), gram(t, "500501"), gram(t, "0.8") // own stake included
 	held := new(big.Int).Add(collateral, fee)

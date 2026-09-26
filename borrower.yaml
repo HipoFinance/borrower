@@ -27,8 +27,7 @@ borrow:
     # collateral, your own `stake` included. The treasury stops adding leftover at this total, so set it
     # to the cap you expect the elector to apply to you (about max_factor times the smallest elected
     # stake) and you are never charged min_payment on stake that earns nothing. Must be 0 or at least
-    # loan + collateral + the request fee. Sent only to a treasury that has the stake-cap release; see
-    # "Capping your stake" in the README.
+    # loan + collateral + the request fee. See "Capping your stake" in the README.
     max_stake: "0" # GRAM amount, 0 for no cap
 
     # Caps your effective stake at this multiple of the smallest stake among the elected validators,
