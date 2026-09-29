@@ -44,13 +44,17 @@ func (s ParticipationState) String() string {
 }
 
 type Participation struct {
-	State           ParticipationState
-	Size            uint16
-	Sorted          *cell.Dictionary
-	Requests        *cell.Dictionary
-	Rejected        *cell.Dictionary
-	Accepted        *cell.Dictionary
-	Accrued         *cell.Dictionary
+	State    ParticipationState
+	Size     uint16
+	Sorted   *cell.Dictionary
+	Requests *cell.Dictionary
+	Rejected *cell.Dictionary
+	// Accepted and Accrued are internal to the treasury's loan decision: its working state, held only
+	// between the messages of one decide chain, and keyed however that needs (accepted is 416 bits since
+	// the auction-floors release). They are kept as raw cells and never read; a decided loan is in
+	// Staked once its stake is sent, moments later.
+	Accepted        *cell.Cell
+	Accrued         *cell.Cell
 	Staked          *cell.Dictionary
 	Recovering      *cell.Dictionary
 	TotalStaked     *big.Int
@@ -68,8 +72,8 @@ func LoadParticipation(c *cell.Cell) Participation {
 		Sorted:          s.MustLoadDict(120), // request_sort_key is 120 bits
 		Requests:        s.MustLoadDict(256),
 		Rejected:        s.MustLoadDict(256),
-		Accepted:        s.MustLoadDict(256),
-		Accrued:         s.MustLoadDict(256),
+		Accepted:        loadInternalDict(s),
+		Accrued:         loadInternalDict(s),
 		Staked:          s.MustLoadDict(256),
 		Recovering:      s.MustLoadDict(256),
 		TotalStaked:     s.MustLoadBigCoins(),
@@ -78,4 +82,13 @@ func LoadParticipation(c *cell.Cell) Participation {
 		StakeHeldFor:    uint32(s.MustLoadUInt(32)),
 		StakeHeldUntil:  uint32(s.MustLoadUInt(32)),
 	}
+}
+
+// loadInternalDict steps over a dictionary internal to the treasury's loan decision, keeping its raw cell
+// without parsing it.
+func loadInternalDict(s *cell.Slice) *cell.Cell {
+	if r := s.MustLoadMaybeRef(); r != nil {
+		return r.MustToCell()
+	}
+	return nil
 }
