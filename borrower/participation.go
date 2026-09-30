@@ -48,11 +48,12 @@ type Participation struct {
 	Size     uint16
 	Sorted   *cell.Dictionary
 	Requests *cell.Dictionary
-	Rejected *cell.Dictionary
-	// Accepted and Accrued are internal to the treasury's loan decision: its working state, held only
-	// between the messages of one decide chain, and keyed however that needs (accepted is 416 bits since
-	// the auction-floors release). They are kept as raw cells and never read; a decided loan is in
-	// Staked once its stake is sent, moments later.
+	Rejected *cell.Cell
+	// Rejected, Accepted and Accrued are internal to the treasury's loan decision: its working state,
+	// held only between the messages of one decide chain (rejected requests are refunded in the same
+	// chain), and keyed however that needs (accepted is 416 bits since the auction-floors release). They
+	// are kept as raw cells and never read; a decided loan is in Staked once its stake is sent, moments
+	// later.
 	Accepted        *cell.Cell
 	Accrued         *cell.Cell
 	Staked          *cell.Dictionary
@@ -71,7 +72,7 @@ func LoadParticipation(c *cell.Cell) Participation {
 		Size:            uint16(s.MustLoadUInt(16)),
 		Sorted:          s.MustLoadDict(120), // request_sort_key is 120 bits
 		Requests:        s.MustLoadDict(256),
-		Rejected:        s.MustLoadDict(256),
+		Rejected:        loadInternalDict(s),
 		Accepted:        loadInternalDict(s),
 		Accrued:         loadInternalDict(s),
 		Staked:          s.MustLoadDict(256),
