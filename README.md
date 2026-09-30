@@ -53,8 +53,30 @@ treasury from 21 September 2026 or later, when the share became the protocol's.
 2. The treasury serves requests in that order. **A request that does not fit in what is left is
    skipped, and the next one is tried**, so a lower-ranked request still wins if it fits. Rank only
    decides the order of service.
-3. Whatever is left after the accepted requests is added to them in proportion to their `loan`
-   (the *accrued* amount), so the pool is always fully lent.
+3. Whatever is left after the accepted requests is added to them (the *accrued* amount), each at its
+   own rate. While no `max_stake` binds, the shares are proportional to `loan`. A loan that reaches its
+   cap takes no more, and what it cannot take goes to the accepted loans with room, so the pool stays
+   fully lent unless every accepted loan is at its cap.
+
+#### The auction floors
+
+Since the treasury's auction-floors release (deployed on 29 September 2026), `request_loan` enforces
+three governor-set floors. They are the last three values of `get_treasury_state` (indices 28-30),
+and each is 0 when off:
+
+- **`min_efficiency`**: a bid whose efficiency is below it is refused and its collateral bounced.
+- **`min_request_stake`**: a request whose `loan` + collateral is below it, in whole GRAM, is refused
+  the same way.
+- **`stake_cap_floor`**: a non-zero `max_stake` below it, in whole GRAM, is not refused. It is raised
+  to the floor and stored raised.
+
+The borrower reads them on every pass. If a bid would be refused, it does not send it. It says which
+floor, and what to set instead: the smallest `min_payment` that reaches `min_efficiency` for your
+`loan`, or how much more `loan` (or `stake`) you need. A `max_stake` below the cap floor is sent as
+the floor, and the borrower logs that it was raised. That way the request the treasury stores
+matches the one the borrower sent, and is not replaced for another request fee on every check. The
+sample `borrower.yaml`'s zero defaults, with `min_payment` 0 and a `loan` of the network's
+`min_stake`, clear none of the floors, so set both.
 
 Requests are public the moment they land, and can be replaced until bidding closes at
 `participate_since` (from the treasury's `get_times`). Replacing a request costs another request fee
@@ -104,8 +126,9 @@ round that pays less.
 
 `max_stake` bounds everything your validator stakes: `loan` + accrued + collateral, where collateral
 is everything the request leaves with the treasury, your own `stake` included. The treasury stops
-adding leftover to your loan at that total, and what it does not add stays in the treasury -- it is
-not given to the other borrowers. Set it to the cap you expect the elector to apply to you, about
+adding leftover to your loan at that total, and gives what your loan cannot take to the other
+accepted loans with room. A non-zero cap below the treasury's `stake_cap_floor` is raised to the floor
+(see *The auction floors*). Set it to the cap you expect the elector to apply to you, about
 `max_factor` times the smallest stake it will elect, and you are never lent stake that earns nothing
 while `min_payment` is charged on it. With a cap you can price `min_payment` on the loan you
 request again. 0 means no cap.

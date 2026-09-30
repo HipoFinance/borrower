@@ -40,7 +40,7 @@ func Process() (wait time.Duration) {
 
 	validatorsElectedFor, _, _, currentVsetHash, nextRoundSince, _ := loadBlockchainConfig(api, ctx, mainchainInfo)
 
-	participations, _, _, _ := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
+	participations, _, _, _, _ := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
 
 	participateSince := getParticipateSince(api, ctx, mainchainInfo, treasuryAddress)
 
@@ -229,7 +229,8 @@ func RequestLoan() (wait time.Duration) {
 	validatorsElectedFor, minStake, maxStakeFactor, _, nextRoundSince, stakeHeldFor :=
 		loadBlockchainConfig(api, ctx, mainchainInfo)
 
-	participations, stopped, borrowerFee, protocolShare := loadTreasuryState(api, ctx, mainchainInfo, treasuryAddress)
+	participations, stopped, borrowerFee, protocolShare, floors := loadTreasuryState(api, ctx, mainchainInfo,
+		treasuryAddress)
 	if protocolShare == nil {
 		panic("Error, the treasury has no protocol-set reward share (index 26 of get_treasury_state); " +
 			"this borrower needs a treasury from 2026-09-21 or later")
@@ -256,6 +257,16 @@ func RequestLoan() (wait time.Duration) {
 
 	stake, loan, minPayment, maxStake, maxFactor := loadBorrowConfig(config.Borrow, minStake, maxStakeFactor)
 
+	// The treasury raises a non-zero max_stake below its stake_cap_floor to the floor and stores it
+	// raised. Sending the raised value, and comparing a standing request against it, keeps the request
+	// from reading as changed on every check and being replaced, for a request fee each time.
+	if raised, ok := FloorCap(maxStake, floors); ok {
+		log.Printf("   🧢 borrow.max_stake of %v GRAM is below the treasury's stake_cap_floor of %v GRAM, which "+
+			"the treasury raises it to; sending the floor", tlb.FromNanoTON(maxStake).String(),
+			tlb.FromNanoTON(raised).String())
+		maxStake = raised
+	}
+
 	requestLoanFee := getRequestLoanFee(api, ctx, mainchainInfo, treasuryAddress)
 
 	if stopped {
@@ -277,6 +288,13 @@ func RequestLoan() (wait time.Duration) {
 		return notSending(0, "⚠️ ", fmt.Sprintf("A loan of %v GRAM with %v GRAM of collateral is under the "+
 			"network's min_stake of %v GRAM plus 1; the treasury would refuse it. Raise borrow.loan or borrow.stake",
 			tlb.FromNanoTON(loan).String(), tlb.FromNanoTON(collateral).String(), tlb.FromNanoTON(minStake).String()))
+	}
+
+	// The treasury refuses a bid below its min_efficiency and bounces the collateral. Sending it anyway
+	// would only be refused again on every retry, and the validator would sit the round out without
+	// saying why.
+	if why := CheckEfficiencyFloor(minPayment, loan, floors); why != "" {
+		return notSending(0, "⚠️ ", why)
 	}
 
 	standing := loadStandingRequest(participation, validatorKey)
@@ -333,6 +351,11 @@ func RequestLoan() (wait time.Duration) {
 		staked = posted
 	}
 	held := new(big.Int).Add(staked, requestLoanFee)
+	// And one whose loan + collateral is below min_request_stake, the same way. staked, not held: the
+	// treasury keeps the request fee out of the collateral it checks.
+	if why := CheckRequestStakeFloor(loan, staked, floors); why != "" {
+		return notSending(0, "⚠️ ", why)
+	}
 	if !CapFits(maxStake, loan, held) {
 		return notSending(0, "⚠️ ", fmt.Sprintf("borrow.max_stake of %v GRAM is below the loan, the collateral "+
 			"and the request fee, %v GRAM; the treasury could refuse it. Raise it, or set it to 0 for no cap",
@@ -580,7 +603,7 @@ func loadBlockchainConfig(api ton.APIClientWrapped, ctx context.Context, maincha
 }
 
 func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
-	treasuryAddress *address.Address) (*cell.Dictionary, bool, uint16, *uint16) {
+	treasuryAddress *address.Address) (*cell.Dictionary, bool, uint16, *uint16, *AuctionFloors) {
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -600,17 +623,18 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 	}
 
 	// get_treasury_state is append-only since the 2026-09-07 release (it no longer mirrors storage
-	// order). The 28 values are:
+	// order). The 31 values are:
 	//
-	//    0 total_coins             7 participations   14 window_duration     21 collection_codes
-	//    1 total_tokens            8 rounds_imbalance 15 last_settled_round  22 bill_codes
-	//    2 total_staking           9 stopped?         16 halter              23 old_parents
-	//    3 total_unstaking        10 instant_mint?    17 governor            24 mid_rate
-	//    4 total_borrowers_stake  11 loan_codes       18 proposed_governor   25 mid_round
-	//    5 deficit                12 previous_rate    19 governance_fee      26 reward_share
-	//    6 parent                 13 current_rate     20 borrower_fee        27 total_request_fees
+	//    0 total_coins             8 rounds_imbalance    16 halter             24 mid_rate
+	//    1 total_tokens            9 stopped?            17 governor           25 mid_round
+	//    2 total_staking          10 instant_mint?       18 proposed_governor  26 reward_share
+	//    3 total_unstaking        11 loan_codes          19 governance_fee     27 total_request_fees
+	//    4 total_borrowers_stake  12 previous_rate       20 borrower_fee       28 min_efficiency
+	//    5 deficit                13 current_rate        21 collection_codes   29 min_request_stake
+	//    6 parent                 14 window_duration     22 bill_codes         30 stake_cap_floor
+	//    7 participations         15 last_settled_round  23 old_parents
 	//
-	// This reads 7, 9, 20 and 26. The tuple has been append-only since the 2026-09-07 release, so
+	// This reads 7, 9, 20, 26 and 28-30. The tuple has been append-only since the 2026-09-07 release, so
 	// these indices hold; a shift would show up as tonutils-go's "incorrect result type" on the first
 	// read below, because the value landing at index 7 stops being a cell. Check the tuple against
 	// contract/contracts/treasury.fc's get_treasury_state before assuming the node is at fault.
@@ -639,7 +663,9 @@ func loadTreasuryState(api ton.APIClientWrapped, ctx context.Context, mainchainI
 		rewardShare = &share
 	}
 
-	return participations, stopped, borrowerFee, rewardShare
+	// Indices 28-30: the auction floors, since the auction-floors release. Nil on a treasury without
+	// them, which enforces none of them.
+	return participations, stopped, borrowerFee, rewardShare, loadAuctionFloors(treasuryState)
 }
 
 const rewardShareIndex = 26

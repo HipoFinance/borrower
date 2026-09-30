@@ -12,7 +12,10 @@ borrow:
     # Additional amount to stake alongside the borrowed loan.
     stake: "0" # GRAM amount
 
-    # The minimum loan amount. When zero, network config of min_stake will be used.
+    # The minimum loan amount. When zero, network config of min_stake will be used. The treasury refuses
+    # a request whose loan + collateral is below its min_request_stake (680,000 GRAM when it was set on
+    # 2026-09-29), which the network's min_stake alone does not reach; the borrower reads the floor and
+    # says what to raise.
     loan: "0" # GRAM amount
 
     # What you promise the pool for this loan, as an amount for `loan`. It is best read as a RATE: the
@@ -20,14 +23,17 @@ borrow:
     # scales min_payment when it adds leftover to your loan, so you pay the same rate on everything it
     # lends you. The pool receives the larger of this and its contractual share of the reward, so a
     # min_payment below that share costs you nothing extra and only sets your rank. See "Pricing a bid"
-    # in the README.
+    # in the README. The treasury refuses a bid below its min_efficiency (620 when it was set on
+    # 2026-09-29), which 0 is; the borrower reads the floor and says the smallest min_payment that clears it.
     min_payment: "0" # GRAM amount
 
     # The most your loan may stake in total: loan + whatever leftover the treasury adds to it +
     # collateral, your own `stake` included. The treasury stops adding leftover at this total, so set it
     # to the cap you expect the elector to apply to you (about max_factor times the smallest elected
     # stake) and you are never charged min_payment on stake that earns nothing. Must be 0 or at least
-    # loan + collateral + the request fee. See "Capping your stake" in the README.
+    # loan + collateral + the request fee. A non-zero cap below the treasury's stake_cap_floor
+    # (2,500,000 GRAM when it was set on 2026-09-29) is raised to that floor, by the treasury and here
+    # alike. See "Capping your stake" in the README.
     max_stake: "0" # GRAM amount, 0 for no cap
 
     # Caps your effective stake at this multiple of the smallest stake among the elected validators,
