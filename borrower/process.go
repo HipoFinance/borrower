@@ -257,6 +257,11 @@ func RequestLoan() (wait time.Duration) {
 
 	stake, loan, minPayment, maxStake, maxFactor := loadBorrowConfig(config.Borrow, minStake, maxStakeFactor)
 
+	answering, err := LoadAnswering(config.Borrow, minPayment)
+	if err != nil {
+		panic(fmt.Sprintf("Error in reading borrower.yaml: %v", err))
+	}
+
 	// The treasury raises a non-zero max_stake below its stake_cap_floor to the floor and stores it
 	// raised. Sending the raised value, and comparing a standing request against it, keeps the request
 	// from reading as changed on every check and being replaced, for a request fee each time.
@@ -281,6 +286,29 @@ func RequestLoan() (wait time.Duration) {
 			formattedNextRoundSince))
 	}
 
+	// Old or new rules, per round. Only a missing getter (exit code 11) means old rules; any other
+	// failure retries the pass, and a round that has seen the getter answer never goes back.
+	state := stateFor(nextRoundSince)
+	auction, auctionErr := getAuctionClose(api, ctx, mainchainInfo, treasuryAddress, nextRoundSince)
+	newRules, failed := resolveRules(auctionErr)
+	if failed != nil {
+		panic(fmt.Sprintf("Error in getting auction close: %v", failed))
+	}
+	now := uint32(time.Now().Unix())
+	// recheck is how soon to look again: while answering, on the poll schedule, otherwise as asked.
+	recheck := func(base time.Duration) time.Duration {
+		if newRules && answering.Respond {
+			if p := PollInterval(uint32(time.Now().Unix()), auction.RequestDeadline(), auction.ParticipateSince); p > 0 && p < base {
+				return p
+			}
+		}
+		return base
+	}
+	if newRules && auction.Status == 2 {
+		return notSending(wait, "⏩", fmt.Sprintf("The treasury accepts no loan requests for round %v now",
+			formattedNextRoundSince))
+	}
+
 	collateral, _ := SizeRequest(loan, minPayment, stake, borrowerFee, func(s *big.Int) *big.Int {
 		return getMaxPunishment(api, ctx, mainchainInfo, treasuryAddress, s)
 	})
@@ -298,6 +326,48 @@ func RequestLoan() (wait time.Duration) {
 	}
 
 	standing := loadStandingRequest(participation, validatorKey)
+
+	// Answering: under new rules with respond on, a standing request that another request outranks is
+	// replaced by one above the best request the ceiling can beat. Otherwise minPayment is untouched.
+	var answer *big.Int
+	if newRules && answering.Respond {
+		if !state.counted {
+			// A failed recount is retried on the next pass. Until one succeeds no answer is sent; the first
+			// send and the standing check still work.
+			if n, ok := recountAnswers(func() ([]*big.Int, error) {
+				return loadSentMinPayments(api, ctx, mainchainInfo, w.Address(), treasuryAddress, nextRoundSince,
+					int64(nextRoundSince)-2*int64(validatorsElectedFor))
+			}); ok {
+				state.answers, state.counted = n, true
+				log.Printf("   🔢 Answers counted for round %v: %v", formattedNextRoundSince, state.answers)
+			}
+		}
+		// This pass's policy: the configured one, but with answering off until the recount works. A copy, so
+		// that recheck keeps polling on the answer schedule and the retry comes on the next poll, not after
+		// the round.
+		passAnswering := answering
+		if !state.counted {
+			// The standing bid is still never lowered: considerAnswer keeps max(configured, standing).
+			passAnswering.Respond = false
+		}
+		if standing != nil {
+			// Our last send is in the view, outranked or not: it is not a refused request to send again.
+			if sent.settle(nextRoundSince, standing, loan, rewardShare, maxStake) {
+				log.Printf("   ✔️  The request sent for round %v is standing", formattedNextRoundSince)
+				sent = sendRecord{}
+			}
+			var target *big.Int
+			target, answer = considerAnswer(participation, new(big.Int).SetBytes(validatorAddress.Data()),
+				standing, passAnswering, state, loan, minPayment, formattedNextRoundSince)
+			if target.Cmp(minPayment) != 0 {
+				// What is sent differs from the configured bid, so the collateral is sized for what is sent.
+				minPayment = target
+				collateral, _ = SizeRequest(loan, minPayment, stake, borrowerFee, func(s *big.Int) *big.Int {
+					return getMaxPunishment(api, ctx, mainchainInfo, treasuryAddress, s)
+				})
+			}
+		}
+	}
 	// A standing request is kept only while it is the bid this config makes AND its collateral still
 	// covers what the treasury checks: a higher punishment or more own stake needs a top-up.
 	if standing != nil && standing.Unchanged(loan, minPayment, rewardShare, maxStake) &&
@@ -307,7 +377,7 @@ func RequestLoan() (wait time.Duration) {
 			sent = sendRecord{}
 		}
 		log.Printf("   ⏩ Already participated in round %v", formattedNextRoundSince)
-		return
+		return recheck(wait)
 	}
 	if sent.round == nextRoundSince {
 		// Our last send has not produced the bid it carried. Before calling it refused, make sure this
@@ -316,7 +386,7 @@ func RequestLoan() (wait time.Duration) {
 		if sent.viewPrecedesSend(time.Now(), treasuryLastLT(api, ctx, mainchainInfo, treasuryAddress)) {
 			log.Printf("   🕐 Round %v does not show the request sent at %v yet; looking again in %v",
 				formattedNextRoundSince, sent.at.Format(TimeFormat), standingCheck)
-			return standingCheck
+			return recheck(standingCheck)
 		}
 		if sent.exhausted() {
 			return notSending(wait, "❌", fmt.Sprintf("The treasury has not taken any of the %v requests sent "+
@@ -330,8 +400,15 @@ func RequestLoan() (wait time.Duration) {
 			minPayment, rewardShare, loan, maxStake)
 	}
 
+	if newRules {
+		// The close is min(E, D), or D while the round has no request. Nothing is sent in its last 60 s.
+		if _, ok := PlanSend(now, auction.RequestDeadline()); !ok {
+			return notSending(recheck(wait), "⏩", fmt.Sprintf("Bidding for round %v closes at %v, too close to send",
+				formattedNextRoundSince, time.Unix(int64(auction.RequestDeadline()), 0).Format(TimeFormat)))
+		}
+	}
 	participateSince := getParticipateSince(api, ctx, mainchainInfo, treasuryAddress)
-	if left := time.Until(time.Unix(int64(participateSince), 0)); left < sendMargin {
+	if left := time.Until(time.Unix(int64(participateSince), 0)); !newRules && left < sendMargin {
 		// request_loan refuses from participate_since on, even while the round is still open, and the
 		// refusal would look like a successful send from here. A send takes up to a couple of minutes
 		// between the engine, the wallet and delivery, and the host clock may be behind, so bidding stops
@@ -403,22 +480,39 @@ func RequestLoan() (wait time.Duration) {
 
 	payload := RequestBody(uint64(time.Now().Unix()), nextRoundSince, loan, minPayment, maxStake, newStakeMsg)
 
-	message := wallet.SimpleMessage(treasuryAddress, tlb.FromNanoTON(value), payload)
+	message := BuildRequestMessage(treasuryAddress, value, payload)
 
-	tx := sendRequestLoan(w, message)
-
-	// Sent is not standing: the treasury may still refuse it. Look again shortly, while there is time
-	// to send again before bidding closes.
-	if sent.round != nextRoundSince {
-		sent = sendRecord{round: nextRoundSince}
+	// recordSend notes the send in `sent`, and counts an answer. Under new rules it runs before the
+	// external message goes on the wire, so a wait that fails or times out cannot let a lagging view send
+	// the same answer again, or let max_responses be exceeded. A re-send of the same answer is not a
+	// further one.
+	recordSend := func() {
+		if answer != nil {
+			state.recordAnswer(answer)
+			log.Printf("   📣 Answer %v of at most %v sent for round %v", state.answers, answering.MaxResponses,
+				formattedNextRoundSince)
+		}
+		// Sent is not standing: the treasury may still refuse it. Look again shortly, while there is time
+		// to send again before bidding closes.
+		sent.record(nextRoundSince, minPayment, staked, time.Now())
 	}
-	sent.attempts++
-	sent.at = time.Now()
+
+	var tx *tlb.Transaction
+	if newRules {
+		tx = sendExpiringRequestLoan(api, w, message, auction.RequestDeadline(), recordSend)
+		if tx == nil {
+			return notSending(recheck(wait), "⏩", fmt.Sprintf("Bidding for round %v closed while the request was "+
+				"prepared; not sending", formattedNextRoundSince))
+		}
+	} else {
+		tx = sendRequestLoan(w, message)
+		recordSend()
+	}
 	sent.lt = tx.LT
 	log.Printf("   ✅ Sent a loan request for round %v; checking that it stands in %v", formattedNextRoundSince,
 		standingCheck)
 
-	return standingCheck
+	return recheck(standingCheck)
 }
 
 // standingCheck is how soon after a send the round's requests are read to confirm the request landed.
@@ -438,6 +532,10 @@ type sendRecord struct {
 	round    uint32
 	attempts int
 	at       time.Time
+	// minPayment is the min_payment the last send carried.
+	minPayment *big.Int
+	// collateral is the stake amount the treasury holds for our request once that send lands.
+	collateral *big.Int
 	// lt is the wallet transaction that sent it. The treasury processes the message after it, so a
 	// view in which the treasury's last transaction is no later than this has not seen it yet.
 	lt uint64
@@ -450,6 +548,39 @@ var sent sendRecord
 // view is no later than the wallet transaction that sent it.
 func (s sendRecord) viewPrecedesSend(now time.Time, treasuryLT uint64) bool {
 	return now.Sub(s.at) < standingCheck || treasuryLT <= s.lt
+}
+
+// record notes a send, made or about to be made, before its transaction is known (lt 0): a view
+// guard then holds even if the wait for the transaction fails.
+func (s *sendRecord) record(round uint32, minPayment, collateral *big.Int, at time.Time) {
+	if s.round != round {
+		*s = sendRecord{round: round}
+	}
+	s.attempts++
+	s.minPayment = new(big.Int).Set(minPayment)
+	s.collateral = new(big.Int).Set(collateral)
+	s.at = at
+	s.lt = 0
+}
+
+// settle reports whether the view shows our last send standing: a request of ours at no lower
+// price than that send, or at the same price with at least its collateral, for the loan and the other
+// terms we send. It is standing even when another request outranks it, and then it is not a refused
+// send to be sent again. A view that still shows the old collateral at the same price has not seen a
+// top-up yet, and settles nothing.
+func (s sendRecord) settle(round uint32, standing *Request, loan *big.Int, rewardShare uint16,
+	maxStake *big.Int) bool {
+	if s.round != round || s.minPayment == nil || s.collateral == nil || standing == nil ||
+		!standing.Unchanged(loan, standing.MinPayment, rewardShare, maxStake) {
+		return false
+	}
+	switch standing.MinPayment.Cmp(s.minPayment) {
+	case 1:
+		return true
+	case 0:
+		return standing.StakeAmount.Cmp(s.collateral) >= 0
+	}
+	return false
 }
 
 // exhausted reports whether the round has had all the sends it may have.
@@ -953,6 +1084,227 @@ func sendRequestLoan(w *wallet.Wallet, message *wallet.Message) *tlb.Transaction
 	defer cancel()
 
 	tx, _, err := w.SendWaitTransaction(ctx, message)
+	if err != nil {
+		panic(fmt.Sprintf("Error in sending loan request: %v", err))
+	}
+	return tx
+}
+
+// getAuctionClose reads the treasury's get_auction_close for a round. The error is returned as it came,
+// for resolveRules to classify.
+func getAuctionClose(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
+	treasuryAddress *address.Address, roundSince uint32) (AuctionClose, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	res, err := api.RunGetMethod(ctx, mainchainInfo, treasuryAddress, "get_auction_close", roundSince)
+	if err != nil {
+		return AuctionClose{}, err
+	}
+	return AuctionClose{
+		Status:           int(res.MustInt(0).Int64()),
+		Close:            uint32(res.MustInt(1).Int64()),
+		BaseClose:        uint32(res.MustInt(2).Int64()),
+		ParticipateSince: uint32(res.MustInt(3).Int64()),
+	}, nil
+}
+
+// considerAnswer decides the min_payment to send for a standing request. It is the standing one (an
+// answer never lowers it) unless another request outranks ours and the ceiling can beat one, in which
+// case it is the answer, which is also returned.
+func considerAnswer(participation *Participation, ourAddress *big.Int, standing *Request, answering Answering,
+	state *roundState, loan, minPayment *big.Int, formattedRound string) (*big.Int, *big.Int) {
+	target := minPayment
+	if standing.MinPayment.Cmp(target) > 0 {
+		target = standing.MinPayment
+	}
+	if !answering.Respond || participation.Requests == nil {
+		return target, nil
+	}
+	all, err := participation.Requests.LoadAll()
+	if err != nil {
+		panic(fmt.Sprintf("Error in reading the round's requests: %v", err))
+	}
+	var rivals []RankedRequest
+	for _, kv := range all {
+		addr := kv.Key.MustLoadBigUInt(256)
+		if isIgnored(addr, answering.Ignore) {
+			continue
+		}
+		rivals = append(rivals, RankOf(addr, LoadRequest(kv.Value.MustToCell())))
+	}
+	ourKey := SortKey(standing.MinPayment, standing.LoanAmount, standing.RewardShare)
+	outranking := Outranked(ourKey, ourAddress, rivals)
+	if len(outranking) == 0 {
+		return target, nil
+	}
+	ceiling := Efficiency(answering.MaxMinPayment, loan)
+	p := Answer(standing.MinPayment, loan, ceiling, outranking)
+	if p != nil && p.Cmp(target) <= 0 {
+		// The answer would not rise above what is sent anyway (a raised config bid): not an answer.
+		p = nil
+	}
+	if p == nil {
+		log.Printf("   🏁 Outranked in round %v by %v request(s), none the ceiling of %v GRAM can beat",
+			formattedRound, len(outranking), tlb.FromNanoTON(answering.MaxMinPayment).String())
+		return target, nil
+	}
+	if state.answers >= answering.MaxResponses && (state.lastAnswer == nil || state.lastAnswer.Cmp(p) != 0) {
+		log.Printf("   🛑 Outranked in round %v, but the %v answers allowed are used; not answering",
+			formattedRound, answering.MaxResponses)
+		return target, nil
+	}
+	log.Printf("   📣 Outranked in round %v; answering with min_payment %v GRAM (ceiling %v GRAM)",
+		formattedRound, tlb.FromNanoTON(p).String(), tlb.FromNanoTON(answering.MaxMinPayment).String())
+	return p, p
+}
+
+func isIgnored(addr *big.Int, ignore []*big.Int) bool {
+	for _, i := range ignore {
+		if i.Cmp(addr) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// loadSentMinPayments reads, oldest first, the min_payment of every request_loan this wallet sent to
+// the treasury for the round, from the wallet's transactions back to since (unix seconds), so that a
+// restart does not reset the count of answers.
+func loadSentMinPayments(api ton.APIClientWrapped, ctx context.Context, mainchainInfo *ton.BlockIDExt,
+	walletAddress, treasuryAddress *address.Address, roundSince uint32, since int64) (sends []*big.Int, err error) {
+	// A liteserver that has pruned the old block, or any read failing, is a failed recount to retry.
+	defer func() {
+		if r := recover(); r != nil {
+			sends, err = nil, fmt.Errorf("%v", r)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	account, err := api.GetAccount(ctx, mainchainInfo, walletAddress)
+	if err != nil {
+		return nil, fmt.Errorf("getting wallet account: %w", err)
+	}
+	return scanSent(func(lt uint64, hash []byte, limit uint32) ([]*tlb.Transaction, error) {
+		return api.ListTransactions(ctx, walletAddress, limit, lt, hash)
+	}, account.LastTxLT, account.LastTxHash, since, func(tx *tlb.Transaction) ([]*big.Int, error) {
+		return sentInTransaction(tx, treasuryAddress, roundSince)
+	})
+}
+
+// maxScanPages bounds how far back a recount reads, in pages of 20 transactions.
+const maxScanPages = 10
+
+// scanSent pages back through a wallet's transactions, stopping at the first page that reaches one
+// older than since, and returns what extract finds in them, oldest first.
+func scanSent(list func(lt uint64, hash []byte, limit uint32) ([]*tlb.Transaction, error), lt uint64, hash []byte, since int64,
+	extract func(*tlb.Transaction) ([]*big.Int, error)) ([]*big.Int, error) {
+	var pages [][]*big.Int
+	reached := false
+	for page := 0; page < maxScanPages && lt != 0; page++ {
+		// The first page is small: a wallet that sends a few requests a round has few recent transactions.
+		limit := uint32(20)
+		if page == 0 {
+			limit = 5
+		}
+		txs, err := list(lt, hash, limit)
+		if err != nil {
+			return nil, fmt.Errorf("listing wallet transactions: %w", err)
+		}
+		if len(txs) == 0 {
+			reached = true
+			break
+		}
+		var found []*big.Int
+		for _, tx := range txs {
+			if int64(tx.Now) < since {
+				continue
+			}
+			f, err := extract(tx)
+			if err != nil {
+				return nil, err
+			}
+			found = append(found, f...)
+		}
+		pages = append([][]*big.Int{found}, pages...)
+		first := txs[0]
+		if int64(first.Now) < since {
+			reached = true
+			break
+		}
+		lt, hash = first.PrevTxLT, first.PrevTxHash
+	}
+	if !reached && lt != 0 {
+		// The page limit came before the start of bidding: a partial count could exceed max_responses.
+		return nil, fmt.Errorf("the wallet has more than %v pages of transactions since the round's bidding began",
+			maxScanPages)
+	}
+	var all []*big.Int
+	for _, p := range pages {
+		all = append(all, p...)
+	}
+	return all, nil
+}
+
+// sentInTransaction is the min_payment of each request_loan for the round that a wallet transaction
+// sent to the treasury.
+func sentInTransaction(tx *tlb.Transaction, treasuryAddress *address.Address, roundSince uint32) ([]*big.Int, error) {
+	if tx.IO.Out == nil {
+		return nil, nil
+	}
+	msgs, err := tx.IO.Out.ToSlice()
+	if err != nil {
+		return nil, fmt.Errorf("reading wallet transaction messages: %w", err)
+	}
+	var out []*big.Int
+	for _, m := range msgs {
+		if m.MsgType != tlb.MsgTypeInternal {
+			continue
+		}
+		im := m.AsInternal()
+		if im.DstAddr.Workchain() != treasuryAddress.Workchain() ||
+			string(im.DstAddr.Data()) != string(treasuryAddress.Data()) {
+			continue
+		}
+		if p, ok := requestLoanMinPayment(im.Body, roundSince); ok {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// recountAnswers is the number of answers already sent this round, and false when the recount failed.
+func recountAnswers(load func() ([]*big.Int, error)) (int, bool) {
+	sends, err := load()
+	if err != nil {
+		log.Printf("   ⚠️  Could not recount the answers sent this round (%v); not answering until it works", err)
+		return 0, false
+	}
+	return countAnswers(sends), true
+}
+
+// sendExpiringRequestLoan sends a request with a valid_until no later than deadline - 5 s, measured on
+// the message as signed: the wallet stamps now + TTL after its own liteserver reads, so the signed value
+// is read back and the message rebuilt with a smaller TTL if it is too late. It returns nil when the
+// close has come too near to send.
+func sendExpiringRequestLoan(api ton.APIClientWrapped, w *wallet.Wallet, message *wallet.Message,
+	deadline uint32, beforeSend func()) *tlb.Transaction {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	ext, err := buildExpiring(deadline, func() uint32 { return uint32(time.Now().Unix()) },
+		func(ttl uint32) error { return SetMessageTTL(w, ttl) },
+		func() (*tlb.ExternalMessage, error) { return w.BuildExternalMessage(ctx, message) },
+		func(body *cell.Cell) (uint32, error) { return MessageValidUntil(w.GetSpec(), body) })
+	if errors.Is(err, errTooLate) {
+		return nil
+	}
+	if err != nil {
+		panic(fmt.Sprintf("Error in building loan request: %v", err))
+	}
+	beforeSend()
+	tx, _, _, err := api.SendExternalMessageWaitTransaction(ctx, ext)
 	if err != nil {
 		panic(fmt.Sprintf("Error in sending loan request: %v", err))
 	}

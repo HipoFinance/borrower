@@ -1,8 +1,12 @@
 package borrower
 
 import (
+	"errors"
 	"math/big"
 
+	"github.com/xssnick/tonutils-go/address"
+	"github.com/xssnick/tonutils-go/tlb"
+	"github.com/xssnick/tonutils-go/ton/wallet"
 	"github.com/xssnick/tonutils-go/tvm/cell"
 )
 
@@ -138,4 +142,22 @@ func SendValue(collateral, requestLoanFee, posted *big.Int) *big.Int {
 		value.Add(value, short)
 	}
 	return value
+}
+
+// BuildRequestMessage is the wallet message that carries a request_loan. It is bounceable, so a request
+// the treasury refuses returns its value.
+func BuildRequestMessage(treasury *address.Address, value *big.Int, body *cell.Cell) *wallet.Message {
+	return wallet.SimpleMessage(treasury, tlb.FromNanoTON(value), body)
+}
+
+// SetMessageTTL sets how long the wallet's next message stays valid, which is its valid_until minus
+// now. The v3r2, v4r2 and v5r1final specs all take it; any other wallet is refused, because a
+// message that cannot be made to expire could land after the close.
+func SetMessageTTL(w *wallet.Wallet, ttl uint32) error {
+	spec, ok := w.GetSpec().(interface{ SetMessagesTTL(uint32) })
+	if !ok {
+		return errors.New("this wallet version cannot set a message expiry")
+	}
+	spec.SetMessagesTTL(ttl)
+	return nil
 }

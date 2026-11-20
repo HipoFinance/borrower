@@ -45,6 +45,22 @@ borrow:
     # maximum is clamped down to it.
     max_factor_ratio: 0 # 0 | >= 1.0
 
+    # Answer outbids under the treasury's soft close (see "The soft close and answering outbids" in the
+    # README). When another request ranks above yours, the borrower replaces yours with one just above
+    # it, up to max_min_payment, and costs another request fee each time.
+    respond: no # yes | no
+
+    # The most min_payment the borrower will raise to, as an amount for `loan`. It caps what is promised,
+    # not what is paid: the treasury scales min_payment by (loan + added) / loan. Set it no higher than
+    # the price you would pay in any round. Default: min_payment, so nothing is ever raised.
+    # max_min_payment: "0" # GRAM amount, at least min_payment
+
+    # The most answers in one round. A restart does not reset it.
+    # max_responses: 10 # 0 or more
+
+    # Your other borrower wallets. Requests from them are never answered.
+    # ignore: [] # friendly addresses
+
 # Configure the wallet used to pay for loan requests.
 wallet:
     # The type of the secret file.

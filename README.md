@@ -78,12 +78,57 @@ matches the one the borrower sent, and is not replaced for another request fee o
 sample `borrower.yaml`'s zero defaults, with `min_payment` 0 and a `loan` of the network's
 `min_stake`, clear none of the floors, so set both.
 
-Requests are public the moment they land, and can be replaced until bidding closes at
-`participate_since` (from the treasury's `get_times`). Replacing a request costs another request fee
-and keeps your collateral: the borrower sends only the fee and whatever the posted collateral falls
-short of. After every send it checks, two minutes later, that the request is actually standing, and
-sends again if the treasury refused it -- at most three times a round, and never within three minutes
-of the close.
+Requests are public the moment they land. Replacing a request costs another request fee and keeps
+your collateral: the borrower sends only the fee and whatever the posted collateral falls short of.
+After every send it checks, two minutes later, that the request is actually standing, and sends again
+if the treasury refused it -- at most three times a round.
+
+#### The soft close and answering outbids
+
+Treasuries with the soft close (the `get_auction_close` getter) turn the auction into an ascending one:
+
+- New requests and price changes stop at the close **E**, normally four hours before
+  `participate_since` (**D**).
+- A request in the last 15 minutes before E moves E to 15 minutes after it, never past D. So an
+  outbid always leaves 15 minutes to answer, and the auction ends later while people keep answering.
+- Between E and D a request can only be shrunk; anything else is refused.
+- A round with no request yet accepts a first bid until D.
+
+The borrower switches to these rules, round by round, as soon as the getter answers. Only a missing
+getter (exit code 11) means the old rules, where bidding closes at `participate_since` and the
+borrower stops sending three minutes before it. Any other error is a failed read and is tried again,
+and once the getter has answered in this process the borrower never goes back to the old rules. A
+restart forgets this and learns it again from the first answer.
+
+Under the new rules the borrower sends nothing in the last 60 seconds before the close (E, or D while
+the round has no request). Every request message expires at most five seconds before the close, and at
+most three minutes after it is built, so a message that is delayed expires instead of landing late. The
+borrower reads the expiry back from the signed message and builds it again if the wallet's own network
+reads made it too late. A request that lands too late is refused and its value bounced; only gas is
+lost.
+
+By default the borrower still sends its configured bid once and checks it stands, now before the new
+close. To compete, set `respond: yes` and `max_min_payment`, the most you are willing to promise:
+
+- Every 60 seconds (every 15 seconds in the last 15 minutes before E, and after E until D, because a
+  last-second request may have moved E) it reads the round. When another
+  request ranks above yours, it replaces yours with one at the smallest `min_payment` that ranks above
+  the highest such request your ceiling can beat. A request priced beyond the ceiling is not chased.
+- It answers at most `max_responses` times a round (10 by default), counted when an answer is sent. The
+  count survives a restart: it is rebuilt from the wallet's own requests for the round. If that
+  rebuild fails (or the wallet has too many recent transactions to read back to the start of bidding), it is tried again on the next pass and no answer is sent until it works (the first
+  send and the standing check are not affected). An outbid beyond the count is logged, not answered.
+- It never lowers `min_payment` within a round. The loan, `max_stake` and stake message do not change.
+- Requests from the wallets listed under `ignore` are never answered, so two instances of one operator
+  cannot bid each other up. List the operator's other borrower wallets there.
+- Each answer costs another request fee (about 0.725 GRAM at the time of writing).
+
+`max_min_payment` caps the `min_payment` the borrower sends, not what you pay: when the treasury adds
+leftover to your loan, it scales what is owed by `(loan + added) / loan` (see *Pricing a bid*).
+
+Set `max_min_payment` no higher than the price you would pay in any round. A rival can push you up to
+it with a request the pool will never lend (a loan larger than the pool is refused when the treasury
+decides), and that costs the rival one request fee.
 
 #### Pricing a bid
 

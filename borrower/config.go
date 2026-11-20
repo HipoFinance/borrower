@@ -5,6 +5,8 @@ import (
 	"math/big"
 	"os"
 
+	"github.com/xssnick/tonutils-go/address"
+	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/tvm/cell"
 	"gopkg.in/yaml.v3"
 )
@@ -26,6 +28,13 @@ type Borrow struct {
 	MinPayment     string  `yaml:"min_payment"`
 	MaxStake       string  `yaml:"max_stake"`
 	MaxFactorRatio float32 `yaml:"max_factor_ratio"`
+
+	// Answering outbids under the treasury's soft close. All off by default.
+	Respond       bool
+	MaxMinPayment string `yaml:"max_min_payment"`
+	MaxResponses  *int   `yaml:"max_responses"`
+	// Ignore holds the operator's other borrower wallets; their requests are never answered.
+	Ignore []string
 
 	// There is no reward share here. The treasury sets one for every loan and refuses a request that
 	// names its own, so it is read from get_treasury_state. A config that still carries the old
@@ -57,6 +66,49 @@ func ReadConfig() (config *Config, err error) {
 
 	err = yaml.Unmarshal(contents, &config)
 	return
+}
+
+// defaultMaxResponses is how many answers a round may get when max_responses is not set.
+const defaultMaxResponses = 10
+
+// Answering is the answering policy of a config, resolved.
+type Answering struct {
+	Respond       bool
+	MaxMinPayment *big.Int
+	MaxResponses  int
+	// Ignore holds the address data of the wallets whose requests are never answered.
+	Ignore []*big.Int
+}
+
+// LoadAnswering resolves the answering keys against the starting min_payment. It returns an error
+// for max_min_payment below min_payment, a negative max_responses, or an address that does not parse.
+func LoadAnswering(config Borrow, minPayment *big.Int) (Answering, error) {
+	a := Answering{Respond: config.Respond, MaxMinPayment: new(big.Int).Set(minPayment),
+		MaxResponses: defaultMaxResponses}
+	if config.MaxMinPayment != "" {
+		c, err := tlb.FromTON(config.MaxMinPayment)
+		if err != nil {
+			return a, fmt.Errorf("invalid max_min_payment: %w", err)
+		}
+		a.MaxMinPayment = c.Nano()
+	}
+	if a.MaxMinPayment.Cmp(minPayment) < 0 {
+		return a, fmt.Errorf("max_min_payment %v is below min_payment %v", a.MaxMinPayment, minPayment)
+	}
+	if config.MaxResponses != nil {
+		if *config.MaxResponses < 0 {
+			return a, fmt.Errorf("max_responses must be 0 or more, got %v", *config.MaxResponses)
+		}
+		a.MaxResponses = *config.MaxResponses
+	}
+	for _, text := range config.Ignore {
+		addr, err := address.ParseAddr(text)
+		if err != nil {
+			return a, fmt.Errorf("invalid ignore address %q: %w", text, err)
+		}
+		a.Ignore = append(a.Ignore, new(big.Int).SetBytes(addr.Data()))
+	}
+	return a, nil
 }
 
 // fee::min_burn in contracts/imports/constants.fc: the smallest burn a borrower fee can produce, so
