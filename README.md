@@ -94,6 +94,11 @@ Treasuries with the soft close (the `get_auction_close` getter) turn the auction
 - Between E and D a request can only be shrunk; anything else is refused.
 - A round with no request yet accepts a first bid until D.
 
+**Update to v2.4.0 or later before the treasury gets the soft close.** v2.3.0 and earlier know only
+the old rules, so they may send after the close; the treasury then refuses the request and bounces it.
+The collateral comes back, but the round is lost. v2.4.0 works with the treasury before and after the
+upgrade, so you can update now.
+
 The borrower switches to these rules, round by round, as soon as the getter answers. Only a missing
 getter (exit code 11) means the old rules, where bidding closes at `participate_since` and the
 borrower stops sending three minutes before it. Any other error is a failed read and is tried again,

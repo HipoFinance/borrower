@@ -2,7 +2,7 @@
 
 Newest first. What changed, why, and what was declined or left open.
 
-## Unreleased — Bidding under the treasury's soft close
+## v2.4.0 (2026-11-22) — Bidding under the treasury's soft close
 
 The treasury's soft close ends the loan auction about four hours before `participate_since`. A
 request in the last 15 minutes before the close moves the close 15 minutes later, never past
@@ -24,6 +24,8 @@ is `specs/soft-close-answers.md`.
   With `respond: yes`, a request that ranks above yours is answered at one efficiency step above
   it, up to the ceiling. The answer count is rebuilt from the wallet's transactions after a
   restart. An operator who doesn't change the yaml gets exactly the previous behaviour.
+- **Setup:** the README now says to update to v2.4.0 before the treasury's soft-close upgrade, since
+  v2.3.0 and earlier may send after the close and lose the round (the collateral is bounced back).
 - **Declined:** shrinking after the close, and estimating whether a rival's loan can actually be
   lent. A rival can push you to `max_min_payment` with a request the pool will never lend, so set
   that ceiling no higher than you would pay in any round. The README says so.
